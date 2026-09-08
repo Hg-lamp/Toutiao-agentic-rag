@@ -15,8 +15,6 @@ async def get_current_user(
     user =await users.get_user_by_token(db,token)
     if not user:
         #需要加入一层前端返回令牌失效的反馈
-        #在后端提示失败的原因
-        logger.info("当前的登录已经失效")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,detail="无效的令牌已经过期的令牌")
 
     return user

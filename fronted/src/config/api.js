@@ -19,4 +19,6 @@ export const aiChatConfig = {
   conversationsEndpoint: `${apiConfig.baseURL}/api/ai/conversations`,
   // 单个会话的消息历史接口
   messagesEndpoint: (threadId) => `${apiConfig.baseURL}/api/ai/conversations/${threadId}/messages`,
+  // 删除单个会话
+  deleteConversationEndpoint: (threadId) => `${apiConfig.baseURL}/api/ai/conversations/${threadId}`,
 }

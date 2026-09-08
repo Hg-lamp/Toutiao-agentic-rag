@@ -22,6 +22,13 @@
           >
             <div class="conv-title">{{ conv.title || '新会话' }}</div>
             <div class="conv-meta">{{ conv.messageCount }} 条 · {{ formatTime(conv.updatedAt) }}</div>
+            <van-button
+              class="conv-del-btn"
+              type="danger"
+              size="mini"
+              icon="cross"
+              @click.stop="confirmDeleteConversation(conv)"
+            />
           </div>
           <van-empty v-if="!chatStore.conversations.length" description="暂无会话" />
         </div>
@@ -42,7 +49,22 @@
           <div v-else :class="['msg', msg.role === 'user' ? 'user' : 'ai']">
             <div class="msg-label">{{ msg.role === 'user' ? '你' : 'AI' }}</div>
             <div class="msg-bubble">
-              <div v-if="msg.role === 'assistant' && msg.content === ''" class="typing"><span></span><span></span><span></span></div>
+              <!-- 工具轨迹卡片 -->
+              <div v-if="msg.traces && msg.traces.length" class="tool-traces">
+                <div v-for="trace in msg.traces" :key="trace.tool_id" class="trace-card">
+                  <div class="trace-header" @click="trace.expanded = !trace.expanded">
+                    <span class="trace-icon">{{ trace.done ? '✅' : '⏳' }}</span>
+                    <span class="trace-label">{{ trace.tool_label }}</span>
+                    <span class="trace-args" v-if="trace.tool_args && trace.tool_args.query">"{{ trace.tool_args.query }}"</span>
+                    <span class="trace-status" :class="{ running: !trace.done }">{{ trace.done ? '完成' : '执行中...' }}</span>
+                  </div>
+                  <div v-if="trace.expanded" class="trace-detail">
+                    <pre class="trace-result">{{ trace.result }}</pre>
+                  </div>
+                </div>
+              </div>
+              <!-- 正文 -->
+              <div v-if="msg.role === 'assistant' && msg.content === '' && (!msg.traces || !msg.traces.length)" class="typing"><span></span><span></span><span></span></div>
               <div v-else v-html="formatMessage(msg.content)"></div>
             </div>
           </div>
@@ -63,8 +85,9 @@
   </div>
 </template>
 <script setup>
+import { showDialog } from 'vant';
 import { ref, onMounted, nextTick, watch } from 'vue'; import TabBar from '../components/TabBar.vue'; import * as marked from 'marked'; import DOMPurify from 'dompurify'; import { aiChatConfig } from '../config/api'; import { useChatStore } from '../store/modules/chat'; import { useUserStore } from '../store/user';
-const messages = ref([{ role: 'assistant', content: '你好！我是聪明鼠鼠，没有什么麻烦我解决不了！！！' }]);
+const messages = ref([{ role: 'assistant', content: '你好，我是鼠鼠小助手，有什么需要我帮忙的吗？' }]);
 const userInput = ref(''); const messagesContainer = ref(null); const isLoading = ref(false);
 const isUploading = ref(false); const fileInput = ref(null);
 const chatStore = useChatStore(); const userStore = useUserStore(); const sidebarVisible = ref(false);
@@ -99,7 +122,7 @@ const formatTime = (iso) => {
 };
 const handleNewChat = () => {
   chatStore.newConversation();
-  messages.value = [{ role: 'assistant', content: '你好！我是聪明鼠鼠，没有什么麻烦我解决不了！！！' }];
+  messages.value = [{ role: 'assistant', content: '你好，我是鼠鼠小助手，有什么需要我帮忙的吗？' }];
   sidebarVisible.value = false;
   nextTick(scrollToBottom);
 };
@@ -116,6 +139,31 @@ const handleSelectConversation = async (conv) => {
   }
   await nextTick(); scrollToBottom();
 };
+const confirmDeleteConversation = async (conv) => {
+  if (isLoading.value) {
+    showDialog({ title: '提示', message: 'AI 正在回复中，请稍后再删除该会话' });
+    return;
+  }
+  try {
+    const action = await showDialog({
+      title: '提示',
+      message: `确定删除会话「${conv.title || '新会话'}」吗？删除后不可恢复。`,
+      showCancelButton: true,
+    });
+    if (action !== 'confirm') return;
+    const res = await chatStore.deleteConversation(conv.threadId);
+    if (!res.success) {
+      showDialog({ title: '提示', message: res.message || '删除会话失败' });
+      return;
+    }
+    if (chatStore.activeThreadId === conv.threadId) {
+      chatStore.activeThreadId = null;
+      messages.value = [{ role: 'assistant', content: '会话已删除，可以开始新对话～' }];
+    }
+  } catch (e) {
+    console.error('删除会话失败:', e);
+  }
+};
 const sendMessage = async () => {
   let msg = userInput.value.trim();
   if (!msg || isLoading.value) return;
@@ -127,7 +175,7 @@ const sendMessage = async () => {
     messages.value.splice(fileIdx, 1); // 发送后移除文件气泡
   }
   messages.value.push({ role: 'user', content: msg }); userInput.value = '';
-  messages.value.push({ role: 'assistant', content: '' }); await nextTick(); scrollToBottom();
+  messages.value.push({ role: 'assistant', content: '', traces: [], done: false }); await nextTick(); scrollToBottom();
   isLoading.value = true;
   try {
     const threadId = chatStore.activeThreadId;
@@ -136,21 +184,40 @@ const sendMessage = async () => {
     const res = await fetch(aiChatConfig.apiEndpoint, { method: 'POST', headers, body: JSON.stringify({ messages: [{ role: 'user', content: msg }], thread_id: threadId }) });
     if (!res.ok) throw new Error(`请求失败，状态码: ${res.status}`);
     const reader = res.body.getReader(); const decoder = new TextDecoder(); let buf = '', ai = '';
+    const lastIdx = () => messages.value.length - 1;
     while (true) {
       const { done, value } = await reader.read(); if (done) break;
       buf += decoder.decode(value, { stream: true }); const lines = buf.split('\n'); buf = lines.pop() || '';
       for (const line of lines) {
-        if (line.startsWith('data: ')) { const data = line.slice(6); if (data === '[DONE]') continue;
-          try { const j = JSON.parse(data);
-            if (j.type === 'meta') {
+        if (!line.startsWith('data: ')) continue;
+        const raw = line.slice(6); if (raw === '[DONE]') continue;
+        try {
+          const j = JSON.parse(raw);
+          switch (j.type) {
+            case 'session_start':
               chatStore.activeThreadId = j.thread_id;
               chatStore.upsertConversation({ threadId: j.thread_id, title: j.title || msg.slice(0, 30), messageCount: 1, updatedAt: new Date().toISOString() });
-              continue;
-            }
-            if (j.content) { ai += j.content; messages.value[messages.value.length - 1].content = ai; await nextTick(); scrollToBottom() } } catch (e) { console.error(e) } }
+              break;
+            case 'tool_start':
+              messages.value[lastIdx()].traces.push({ tool_id: j.tool_id, tool_name: j.tool_name, tool_label: j.tool_label || j.tool_name, tool_args: j.tool_args, result: '', expanded: false, done: false });
+              await nextTick(); scrollToBottom();
+              break;
+            case 'tool_end':
+              { const trace = messages.value[lastIdx()].traces.find(t => t.tool_id === j.tool_id);
+                if (trace) { trace.result = j.result; trace.done = true; } }
+              await nextTick(); scrollToBottom();
+              break;
+            case 'text_delta':
+              ai += j.content; messages.value[lastIdx()].content = ai; await nextTick(); scrollToBottom();
+              break;
+            case 'done':
+              messages.value[lastIdx()].done = true;
+              break;
+          }
+        } catch (e) { console.error(e) }
       }
     }
-    if (!ai) messages.value[messages.value.length - 1].content = '抱歉，AI 暂时无法生成回复，请稍后再试。';
+    if (!ai) messages.value[lastIdx()].content = '抱歉，AI 暂时无法生成回复，请稍后再试。';
   } catch (e) { messages.value[messages.value.length - 1].content = `发生错误: ${e.message}` } finally { isLoading.value = false; await nextTick(); scrollToBottom() }
 };
 watch(messages, () => nextTick(scrollToBottom), { deep: true });
@@ -418,7 +485,9 @@ onMounted(async () => { scrollToBottom(); await chatStore.fetchConversations(); 
   padding: 10px 8px;
 }
 .conv-item {
+  position: relative;
   padding: 12px 14px;
+  padding-right: 40px;
   border-radius: 16px;
   margin-bottom: 6px;
   cursor: pointer;
@@ -440,4 +509,53 @@ onMounted(async () => { scrollToBottom(); await chatStore.fetchConversations(); 
   margin-bottom: 4px;
 }
 .conv-meta { font-size: 12px; color: var(--text-tertiary); }
+
+.conv-del-btn {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  transform: translateY(-50%);
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  opacity: 0.65;
+  border: none;
+}
+
+/* ── 工具轨迹卡片 ── */
+.tool-traces { margin-bottom: 8px; }
+.trace-card {
+  background: rgba(255, 248, 235, 0.6);
+  border: 1px solid rgba(255, 200, 100, 0.2);
+  border-radius: 12px;
+  margin-bottom: 6px;
+  overflow: hidden;
+  backdrop-filter: blur(4px);
+}
+.trace-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  user-select: none;
+}
+.trace-icon { font-size: 14px; }
+.trace-label { font-weight: 600; color: var(--text-primary); }
+.trace-args { color: var(--text-secondary); font-size: 12px; }
+.trace-status { margin-left: auto; font-size: 12px; }
+.trace-status.running { color: #ff9800; }
+.trace-status:not(.running) { color: #4caf50; }
+.trace-detail { padding: 0 12px 8px; }
+.trace-result {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+  margin: 0;
+}
 </style>

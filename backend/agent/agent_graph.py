@@ -1,5 +1,6 @@
 from typing import Literal
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 from langgraph.graph import START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode
@@ -122,21 +123,17 @@ builder.add_edge(START, "llm_node")
 builder.add_edge("llm_node", "router",)
 builder.add_edge("tool_node","llm_node")
 
-async def ai_response(user_question:str,thread_id:str):
+async def ai_response(user_question:str,config:RunnableConfig):
     async with AsyncPostgresSaver.from_conn_string(CHECKPOINTER_DATABASE_URL) as saver:
         await saver.setup()
         graph = builder.compile(checkpointer=saver)
-        config = {
-            "configurable": {
-                "thread_id": thread_id
-            },
-            "recursion_limit": 100,
-        }
+
         try:
-            async for r in graph.astream(
+            async for event, data in graph.astream(
                 {"input": user_question, "messages": [HumanMessage(content=user_question)]},
-                config=config, stream_mode="messages"
+                config=config,
+                stream_mode=["messages", "updates"],
             ):
-                yield r
+                yield event, data
         except GraphRecursionError as e:
             logger.info(f"Graph recursion error: {e}")

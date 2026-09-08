@@ -76,5 +76,29 @@ export const useChatStore = defineStore('chat', {
       if (idx !== -1) this.conversations.splice(idx, 1);
       this.conversations.unshift(conv);
     },
+
+    // 删除某个会话（同时清理后端 conversation/message/checkpoint）
+    async deleteConversation(threadId) {
+      const userStore = useUserStore();
+      if (!userStore.getLoginStatus) {
+        return { success: false, message: '请先登录' };
+      }
+      try {
+        const response = await axios.delete(aiChatConfig.deleteConversationEndpoint(threadId), {
+          headers: { Authorization: userStore.token },
+        });
+        if (response.data.code === 200) {
+          this.conversations = this.conversations.filter((c) => c.threadId !== threadId);
+          if (this.activeThreadId === threadId) {
+            this.activeThreadId = null;
+          }
+          return { success: true };
+        }
+        return { success: false, message: response.data.message || '删除会话失败' };
+      } catch (error) {
+        console.error('删除会话失败:', error);
+        return { success: false, message: error.response?.data?.detail || '网络请求失败' };
+      }
+    },
   },
 });

@@ -1,5 +1,6 @@
-from typing import Optional
-from pydantic import BaseModel, Field
+from datetime import datetime
+from typing import Optional, Annotated
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class MessageItem(BaseModel):
@@ -21,3 +22,42 @@ class UploadResponse(BaseModel):
     filename: str
     text: str
     size: int
+
+
+class ConversationResponse(BaseModel):
+    """会话列表单项，字段以 camelCase 对齐前端。"""
+    conversation_id: str = Field(serialization_alias="threadId")
+    title: Optional[str] = None
+    message_count: int = Field(serialization_alias="messageCount")
+    created_at: datetime = Field(serialization_alias="createdAt")
+    updated_at: datetime = Field(serialization_alias="updatedAt")
+    model_config = ConfigDict(
+        from_attributes=True,  # 允许从 orm 对象属性中取值
+    )
+
+
+class ConversationListResponse(BaseModel):
+    """会话列表，data 直接返回 { list, total }。"""
+    total: int
+    list: list[ConversationResponse]
+    model_config = ConfigDict(
+        from_attributes=True,
+    )
+
+
+class MessageResponse(BaseModel):
+    """单条消息，字段以 camelCase 对齐前端。"""
+    role: str
+    content: str
+    created_at: datetime = Field(serialization_alias="createdAt")
+    model_config = ConfigDict(
+        from_attributes=True,
+    )
+
+
+class MessageListResponse(BaseModel):
+    """消息历史，data 直接返回 { list }。"""
+    list: list[MessageResponse]
+    model_config = ConfigDict(
+        from_attributes=True,
+    )
