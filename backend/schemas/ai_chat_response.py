@@ -24,6 +24,14 @@ class UploadResponse(BaseModel):
     size: int
 
 
+class RagUploadResponse(BaseModel):
+    """知识库文件入库结果。"""
+    filename: str
+    size: int
+    chunks: int
+    document_id: str
+
+
 class ConversationResponse(BaseModel):
     """会话列表单项，字段以 camelCase 对齐前端。"""
     conversation_id: str = Field(serialization_alias="threadId")

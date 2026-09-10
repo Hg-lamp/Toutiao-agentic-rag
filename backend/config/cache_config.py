@@ -42,3 +42,15 @@ async def set_cache(key:str,value:Any,expire:int=3600):
     except Exception as e:
         print(f"设置缓存失败了{e}")
         return False
+
+
+async def delete_cache_by_prefix(prefix: str):
+    """删除指定前缀的缓存，供知识库更新后失效旧检索结果。"""
+    try:
+        keys = [key async for key in redis.scan_iter(match=f"{prefix}*")]
+        if keys:
+            await redis.delete(*keys)
+        return len(keys)
+    except Exception as e:
+        print(f"删除缓存失败{e}")
+        return 0

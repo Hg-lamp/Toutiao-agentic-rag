@@ -19,7 +19,7 @@ if config.config_file_name is not None:
 
 # ========== 关键：导入所有模型，让 Alembic 检测到表结构 ==========
 from backend.models import Base                     # 统一的 Base
-from backend.models import news, users, favorite, history  # 加载所有模型文件
+from backend.models import news, users, favorite, history, memory  # 加载所有模型文件
 target_metadata = Base.metadata
 
 

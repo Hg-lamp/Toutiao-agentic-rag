@@ -2,6 +2,8 @@
 
 **FastAPI + LangGraph + LangChain** 构建的 Agentic RAG 新闻资讯 AI 平台。
 
+> 项目需求与验收标准见 [REQUIREMENTS.md](REQUIREMENTS.md)。
+
 ## 功能特性
 
 - **新闻浏览** — 分类、列表、详情
@@ -13,7 +15,10 @@
   - 子 Agent 任务分发
   - ReAct 循环（recursion_limit 100）
 - **文件上传分析** — 支持上传 TXT/MD/PDF/DOCX/XLSX/CSV，自动解析文本内容注入对话上下文
-- **对话持久化** — 基于 LangGraph Checkpoint 自动保存会话状态
+- **个人知识库** — 文件切分后写入用户专属 Redis 向量索引
+- **对话持久化** — 基于 MySQL 保存会话、消息和记忆，PostgreSQL/LangGraph Checkpoint 保存图状态
+- **会话管理** — 会话列表、历史消息查看、删除会话
+- **对话记忆** — 提取并持久化用户长期偏好，辅助后续回答
 
 ## 技术栈
 
@@ -35,10 +40,9 @@
 ## 环境要求
 
 - Python 3.12+
-- MySQL 8.0+
-- Redis 7.0+（6379 缓存 + 6380 向量存储）
-- PostgreSQL 16+（LangGraph Checkpoint）
-- Ollama（本地嵌入模型）
+- Docker Desktop（推荐，包含 MySQL、Redis、Redis Stack、PostgreSQL、SearXNG）
+- Ollama（本地嵌入模型 `qwen3-embedding:0.6b`）
+- DeepSeek API Key
 
 ## 快速开始
 
@@ -56,10 +60,10 @@ cp .env.example .env
 # 3. 安装依赖
 pip install -r requirements.txt
 
-# 4. 确保 MySQL、Redis、PostgresSQL 就绪
+# 4. 确保 MySQL、Redis、PostgreSQL、Ollama、SearXNG 就绪
 #    MySQL: root:root@localhost:3306/news_app (utf8mb4)
 #    Redis: localhost:6379（缓存）+ localhost:6380（向量）
-#    PostgresSQL: postgres:postgres@localhost:5432/langgraph_db
+#    PostgreSQL: postgres:postgres@localhost:5432/langgraph_db
 
 # 5. 执行数据库迁移
 alembic upgrade head
@@ -71,8 +75,26 @@ uvicorn backend.main:app --reload --host localhost --port 8000
 ### Docker 部署
 
 ```bash
-# 一键启动所有服务
+# 配置 API Key 和 SearXNG 密钥
+cp .env.example .env
+# 编辑 .env，至少填写 DEEPSEEK_API_KEY
+
+# 构建后端镜像并启动基础设施和 API
 docker compose up -d --build
+
+# 查看服务状态和日志
+docker compose ps
+docker compose logs -f backend
+
+# 停止服务（保留数据卷）
+docker compose down
+```
+
+Docker Compose 会启动 MySQL、Redis 缓存、Redis Stack 向量库、PostgreSQL
+Checkpoint、SearXNG 和后端 API。首次启动后仍需在宿主机启动 Ollama，并执行：
+
+```bash
+ollama pull qwen3-embedding:0.6b
 ```
 
 ### 访问地址
@@ -82,6 +104,7 @@ docker compose up -d --build
 | http://localhost:8000 | API 服务 |
 | http://localhost:8000/docs | Swagger 文档 |
 | http://localhost:8000/redoc | ReDoc 文档 |
+| http://localhost:8080 | SearXNG 搜索服务 |
 
 ## 智能体流程
 
@@ -143,8 +166,8 @@ Toutiao_course/
 │   │   └── child_graph.py  # 子图
 │   ├── cache/              # Redis 缓存
 │   ├── config/             # 配置文件
-│   │   ├── model.py        # LLM / 嵌入模型
-│   │   ├── db_config.py    # 数据库配置
+│   │   ├── llm_config.py   # LLM 配置
+│   │   ├── mysql_config.py # MySQL 数据库配置
 │   │   ├── prompt_template.py  # 提示词模板
 │   │   ├── embeddings.py   # 嵌入模型配置
 │   │   ├── redis_vector.py # 向量存储配置
@@ -154,18 +177,15 @@ Toutiao_course/
 │   ├── crud/               # 数据库 CRUD
 │   ├── models/             # SQLAlchemy 模型
 │   ├── routers/            # API 路由
-│   │   ├── ai_chat.py      # AI 聊天 SSE
-│   │   ├── upload.py       # 文件上传
+│   │   ├── ai_chat.py      # AI 聊天、文件与会话
 │   │   ├── news.py         # 新闻
 │   │   ├── users.py        # 用户
 │   │   ├── favorite.py     # 收藏
 │   │   └── history.py      # 历史
 │   ├── schemas/            # Pydantic 模型
 │   ├── services/           # 业务服务
-│   │   ├── Rag.py          # RAG 检索
-│   │   ├── tools.py        # 工具定义
-│   │   ├── tool_worker.py  # 工具执行
-│   │   └── streamresponse.py  # SSE 流式响应
+│   │   ├── rag.py          # RAG 检索
+│   │   └── tools.py        # 工具定义与执行
 │   └── utils/              # 工具函数
 ├── alembic/                # 数据库迁移
 ├── searxng/                # SearXNG 配置
@@ -198,7 +218,12 @@ Toutiao_course/
 | 历史 | `DELETE /api/history/delete/{history_id}` | 删除单条历史记录 |
 | 历史 | `DELETE /api/history/clear` | 清空历史记录 |
 | AI | `POST /api/ai/chat` | AI 聊天（SSE 流式） |
-| 文件 | `POST /api/upload` | 上传文件（5MB 限制，支持 TXT/MD/PDF/DOCX/XLSX/CSV） |
+| AI | `GET /api/ai/conversations` | 当前用户的会话列表 |
+| AI | `POST /api/ai/aicreate/conversations` | 创建会话 |
+| AI | `GET /api/ai/conversations/{id}/messages` | 获取会话消息 |
+| AI | `DELETE /api/ai/conversations/{id}` | 删除会话 |
+| 文件 | `POST /api/ai/upload` | 解析文件并返回文本（5MB 限制） |
+| 文件 | `POST /api/ai/rag-upload` | 上传文件并写入当前用户知识库 |
 
 ## 环境变量
 
@@ -223,13 +248,15 @@ Toutiao_course/
 - `favorite` — 收藏表
 - `history` — 浏览历史表
 - `conversations` — AI 会话元信息表
+- `messages` — AI 消息记录表
+- `memory` — 用户长期记忆表
 
 ### PostgreSQL（LangGraph Checkpoint）
 - `checkpoints` — 会话状态快照（自动管理，含完整消息历史）
 - `checkpoint_writes` — 节点写入记录（自动管理）
 - `checkpoint_blobs` — 大对象存储（自动管理）
 
-> 消息内容存储在 LangGraph Checkpoint 中，无需手动管理消息表。
+> 图状态由 LangGraph Checkpoint 管理；消息列表同时写入 MySQL，便于会话历史分页读取。
 
 ## 文件上传功能
 
@@ -245,7 +272,7 @@ Toutiao_course/
 - 解析文本最大 10 万字（超出截断）
 - 上传后不存盘，文本内容直接注入对话上下文
 
-## TODO
+## 开发计划
 
 - [x] 用户注册/登录
 - [x] 新闻 CRUD
@@ -256,13 +283,12 @@ Toutiao_course/
 - [x] Alembic 数据库迁移
 - [x] 文件上传与解析
 - [x] 为工具节点添加缓存机制
-- [ ] 会话管理（列表/删除/重命名）
+- [x] 会话管理（列表/删除/消息历史）
 - [ ] Skill 路由系统（向量匹配）
-- [ ] 用户档案提炼（Memory 系统）
+- [x] 用户档案提炼（Memory 系统）
 - [ ] 上下文超限检测与提示
 - [ ] 单元测试 / 集成测试
 - [ ] 更多工具函数
-- [ ] 消息列表存入数据库
 - [ ] 优化‘我的’界面的效果
 
 ## 许可证

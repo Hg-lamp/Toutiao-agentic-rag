@@ -1,5 +1,6 @@
 import json
 import uuid
+import asyncio
 
 from fastapi import HTTPException
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
@@ -8,6 +9,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from sqlalchemy import select, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.functions import count
+from loguru import logger
 
 from backend.agent.agent_graph import ai_response
 from backend.config.mysql_config import AsyncSessionLocal, CHECKPOINTER_DATABASE_URL
@@ -50,9 +52,12 @@ def sse(event_type: str, **payload) -> str:
 TOOL_LABELS = {
     "searxng_search_engine": "联网搜索",
     "calculator": "计算器",
+    "get_current_time": "时间查询",
+    "analyze_numeric_data": "数据分析",
     "rag_search": "知识库检索",
     "agent": "任务分发",
     "get_memory": "记忆查询",
+    "generate_chart": "图表生成",
 }
 
 
@@ -70,44 +75,74 @@ async def generate(thread_id:str,question:str,user_id:int,config:RunnableConfig)
 
         full = ""
         # ③ 遍历双流
-        async for event, data in ai_response(user_question=question, config=config):
-            # messages 流：文本 token
-            if event == "messages":
-                chunk, metadata = data
-                if isinstance(chunk, AIMessageChunk) and chunk.content:
-                    full += chunk.content
-                    yield sse("text_delta", content=chunk.content)
+        try:
+            async for event, data in ai_response(user_question=question, config=config):
+                # messages 流：文本 token
+                if event == "messages":
+                    chunk, metadata = data
+                    if isinstance(chunk, AIMessageChunk) and chunk.content:
+                        full += chunk.content
+                        yield sse("text_delta", content=chunk.content)
 
-            # updates 流：节点级输出
-            elif event == "updates":
-                for node_name, node_output in (data or {}).items():
-                    # llm_node → tool_calls → tool_start
-                    if node_name == "llm_node":
-                        for msg_obj in (node_output or {}).get("messages", []):
-                            if isinstance(msg_obj, AIMessage) and getattr(msg_obj, "tool_calls", None):
-                                for tc in msg_obj.tool_calls:
+                # updates 流：节点级输出
+                elif event == "updates":
+                    for node_name, node_output in (data or {}).items():
+                        # llm_node → tool_calls → tool_start
+                        if node_name == "llm_node":
+                            for msg_obj in (node_output or {}).get("messages", []):
+                                if isinstance(msg_obj, AIMessage) and getattr(msg_obj, "tool_calls", None):
+                                    for tc in msg_obj.tool_calls:
+                                        yield sse(
+                                            "tool_start",
+                                            tool_id=tc["id"],
+                                            tool_name=tc["name"],
+                                            tool_label=TOOL_LABELS.get(tc["name"], tc["name"]),
+                                            tool_args=tc["args"],
+                                        )
+
+                        # tool_node → ToolMessage → tool_end
+                        elif node_name == "tool_node":
+                            for msg_obj in (node_output or {}).get("messages", []):
+                                if isinstance(msg_obj, ToolMessage):
+                                    result_str = str(msg_obj.content)
+                                    if msg_obj.name == "generate_chart":
+                                        try:
+                                            chart_payload = json.loads(result_str)
+                                        except (TypeError, json.JSONDecodeError) as exc:
+                                            raise ValueError("图表工具返回了无效的 JSON") from exc
+                                        if not isinstance(chart_payload, dict) or chart_payload.get("type") != "chart":
+                                            raise ValueError("图表工具返回数据缺少 type=chart")
+                                        chart_json = json.dumps(chart_payload, ensure_ascii=False)
+                                        full += f"\n\n<!-- AI_CHART:{chart_json} -->"
+                                        yield sse(
+                                            "chart",
+                                            tool_id=msg_obj.tool_call_id,
+                                            chart=chart_payload,
+                                        )
+                                        result_str = "图表已生成"
+                                    if len(result_str) > 800:
+                                        result_str = result_str[:800] + "...(已截断)"
                                     yield sse(
-                                        "tool_start",
-                                        tool_id=tc["id"],
-                                        tool_name=tc["name"],
-                                        tool_label=TOOL_LABELS.get(tc["name"], tc["name"]),
-                                        tool_args=tc["args"],
+                                        "tool_end",
+                                        tool_id=msg_obj.tool_call_id,
+                                        tool_name=msg_obj.name or msg_obj.tool_call_id,
+                                        tool_label=TOOL_LABELS.get(msg_obj.name, msg_obj.name or "工具"),
+                                        result=result_str,
                                     )
-
-                    # tool_node → ToolMessage → tool_end
-                    elif node_name == "tool_node":
-                        for msg_obj in (node_output or {}).get("messages", []):
-                            if isinstance(msg_obj, ToolMessage):
-                                result_str = str(msg_obj.content)
-                                if len(result_str) > 800:
-                                    result_str = result_str[:800] + "...(已截断)"
-                                yield sse(
-                                    "tool_end",
-                                    tool_id=msg_obj.tool_call_id,
-                                    tool_name=msg_obj.name or msg_obj.tool_call_id,
-                                    tool_label=TOOL_LABELS.get(msg_obj.name, msg_obj.name or "工具"),
-                                    result=result_str,
-                                )
+        except asyncio.CancelledError:
+            # 客户端点击停止或断开连接时，立即终止上游模型流。
+            logger.info("AI 流式响应被客户端中断")
+            raise
+        except asyncio.TimeoutError:
+            logger.exception("AI 流式响应超时")
+            error_message = "模型响应超时，请稍后重试。"
+            full = full or error_message
+            yield sse("error", message=error_message)
+        except Exception:
+            logger.exception("AI 流式响应失败")
+            error_message = "AI 服务暂时不可用，请稍后重试。"
+            full = full or error_message
+            yield sse("error", message=error_message)
 
         # ④ 存 AI 回答
         await add_message(db=s, thread_id=thread_id, role="assistant", content=full, user_id=user_id)

@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   # ==================== MySQL ====================
   mysql:
@@ -106,6 +104,12 @@ services:
       DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY}"
       # SearXNG（容器内用服务名连接）
       SEARXNG_HOST: "http://searxng:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     volumes:
       # 上传文件持久化
       - uploads_data:/app/backend/uploads

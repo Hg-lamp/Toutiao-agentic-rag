@@ -96,7 +96,7 @@ async def router(parent_state:ParentState)->Command[Literal["tool_node","__end__
 
 builder = StateGraph(state_schema=ParentState,input_state_schema=input_state,output_state_schema=output_state,private_state_schema=private_state)
 
-builder.add_node("llm_node", llm_node,timeout=50,retry_policy=retry_policy)
+builder.add_node("llm_node", llm_node,timeout=300,retry_policy=retry_policy)
 builder.add_node("router", router)
 
 # 封装 ToolNode，确保 tool_calls 与 ToolMessage 一一对应

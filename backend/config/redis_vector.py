@@ -11,7 +11,10 @@ redis_vector_config = RedisConfig(
     redis_url=os.getenv("REDIS_VECTOR_URL", "redis://localhost:6380"),
     metadata_schema=[
         {"name": "category", "type": "tag"},
-        {"name": "num", "type": "numeric"}
+        {"name": "num", "type": "numeric"},
+        {"name": "user_id", "type": "tag"},
+        {"name": "document_id", "type": "tag"},
+        {"name": "source", "type": "text"},
     ]
 )
 #检索存储器
