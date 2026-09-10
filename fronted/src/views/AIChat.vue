@@ -66,14 +66,35 @@
               <!-- 正文 -->
               <div v-if="msg.role === 'assistant' && msg.content === '' && (!msg.traces || !msg.traces.length)" class="typing"><span></span><span></span><span></span></div>
               <div v-else v-html="formatMessage(msg.content)"></div>
+              <div
+                v-for="(chart, chartIndex) in (msg.charts || [])"
+                :key="chartIndex"
+                class="chart-container"
+                :ref="(el) => setChartRef(el, index, chartIndex)"
+              ></div>
             </div>
+            <van-button
+              v-if="msg.role === 'assistant' && index === messages.length - 1 && msg.status === 'generating'"
+              class="stop-generation-btn"
+              type="warning"
+              size="small"
+              round
+              icon="stop"
+              @click.stop="stopGeneration"
+            >
+              停止
+            </van-button>
           </div>
         </template>
       </div>
       <div class="input-area">
         <input type="file" ref="fileInput" @change="handleFileSelect" accept=".txt,.md,.csv,.pdf,.docx,.xlsx" style="display:none">
+        <input type="file" ref="ragFileInput" @change="handleRagFileSelect" accept=".txt,.md,.csv,.pdf,.docx,.xlsx" style="display:none">
         <div class="upload-bar">
           <van-button class="upload-btn" :disabled="isUploading" @click="triggerUpload">{{ isUploading ? '⏳' : 'file' }}</van-button>
+          <van-button class="upload-btn rag-upload-btn" :disabled="isRagUploading" @click="triggerRagUpload">
+            {{ isRagUploading ? '⏳' : 'RAG' }}
+          </van-button>
         </div>
         <div class="input-row">
           <van-field v-model="userInput" rows="1" autosize type="textarea" placeholder="请输入问题..." class="chat-input" @keypress.enter.prevent="sendMessage" />
@@ -86,15 +107,42 @@
 </template>
 <script setup>
 import { showDialog } from 'vant';
-import { ref, onMounted, nextTick, watch } from 'vue'; import TabBar from '../components/TabBar.vue'; import * as marked from 'marked'; import DOMPurify from 'dompurify'; import { aiChatConfig } from '../config/api'; import { useChatStore } from '../store/modules/chat'; import { useUserStore } from '../store/user';
+import { ref, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'; import TabBar from '../components/TabBar.vue'; import * as marked from 'marked'; import DOMPurify from 'dompurify'; import * as echarts from 'echarts'; import { aiChatConfig } from '../config/api'; import { useChatStore } from '../store/modules/chat'; import { useUserStore } from '../store/user';
 const messages = ref([{ role: 'assistant', content: '你好，我是鼠鼠小助手，有什么需要我帮忙的吗？' }]);
 const userInput = ref(''); const messagesContainer = ref(null); const isLoading = ref(false);
+const activeRequest = ref(null);
 const isUploading = ref(false); const fileInput = ref(null);
+const isRagUploading = ref(false); const ragFileInput = ref(null);
 const chatStore = useChatStore(); const userStore = useUserStore(); const sidebarVisible = ref(false);
+const chartInstances = new Map();
+const chartKey = (messageIndex, chartIndex) => `${messageIndex}-${chartIndex}`;
+const setChartRef = (el, messageIndex, chartIndex) => {
+  if (!el) return;
+  const chart = messages.value[messageIndex]?.charts?.[chartIndex];
+  if (!chart) return;
+  const key = chartKey(messageIndex, chartIndex);
+  const instance = echarts.getInstanceByDom(el) || echarts.init(el);
+  instance.setOption(chart.option, true);
+  chartInstances.set(key, instance);
+};
 const formatMessage = (c) => c ? DOMPurify.sanitize(marked.parse(c)) : '';
+const parseStoredMessage = (content) => {
+  const charts = [];
+  const cleanContent = (content || '').replace(/<!-- AI_CHART:(.*?) -->/gs, (_, raw) => {
+    try {
+      const payload = JSON.parse(raw);
+      if (payload?.type === 'chart' && payload.option) charts.push(payload);
+    } catch (e) {
+      console.warn('忽略无效的历史图表数据', e);
+    }
+    return '';
+  }).trim();
+  return { content: cleanContent, charts };
+};
 const formatSize = (bytes) => { if (bytes < 1024) return bytes + 'B'; if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + 'KB'; return (bytes / 1024 / 1024).toFixed(1) + 'MB'; };
 const scrollToBottom = () => { if (messagesContainer.value) messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight };
 const triggerUpload = () => { if (!isUploading.value) fileInput.value.click() };
+const triggerRagUpload = () => { if (!isRagUploading.value) ragFileInput.value.click() };
 const handleFileSelect = async (e) => {
   const file = e.target.files[0]; if (!file) return;
   isUploading.value = true;
@@ -108,6 +156,32 @@ const handleFileSelect = async (e) => {
     await nextTick(); scrollToBottom();
   } catch (e) { messages.value.push({ role: 'assistant', content: `⚠️ 文件上传失败: ${e.message}` }); await nextTick(); scrollToBottom(); }
   finally { isUploading.value = false; e.target.value = ''; }
+};
+const handleRagFileSelect = async (e) => {
+  const file = e.target.files[0]; if (!file) return;
+  isRagUploading.value = true;
+  try {
+    const fd = new FormData(); fd.append('file', file);
+    const headers = {};
+    if (userStore.token) headers.Authorization = userStore.token;
+    const res = await fetch(aiChatConfig.ragUploadEndpoint, { method: 'POST', headers, body: fd });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || `知识库上传失败: ${res.status}`);
+    }
+    const data = await res.json();
+    messages.value.push({
+      role: 'assistant',
+      content: `✅ 文件「${data.filename}」已加入知识库，共切分 ${data.chunks} 个片段。后续提问时会自动检索。`,
+    });
+    await nextTick(); scrollToBottom();
+  } catch (error) {
+    messages.value.push({ role: 'assistant', content: `⚠️ 知识库上传失败: ${error.message}` });
+    await nextTick(); scrollToBottom();
+  } finally {
+    isRagUploading.value = false;
+    e.target.value = '';
+  }
 };
 const removeFileMsg = (index) => {
   messages.value.splice(index, 1);
@@ -132,7 +206,7 @@ const handleSelectConversation = async (conv) => {
   messages.value = [{ role: 'assistant', content: '' }];
   const res = await chatStore.fetchMessages(conv.threadId);
   if (res.success) {
-    messages.value = res.data.map((m) => ({ role: m.role, content: m.content }));
+    messages.value = res.data.map((m) => ({ role: m.role, ...parseStoredMessage(m.content) }));
     if (!messages.value.length) messages.value = [{ role: 'assistant', content: '（空会话）' }];
   } else {
     messages.value = [{ role: 'assistant', content: `加载失败：${res.message}` }];
@@ -175,20 +249,37 @@ const sendMessage = async () => {
     messages.value.splice(fileIdx, 1); // 发送后移除文件气泡
   }
   messages.value.push({ role: 'user', content: msg }); userInput.value = '';
-  messages.value.push({ role: 'assistant', content: '', traces: [], done: false }); await nextTick(); scrollToBottom();
+  messages.value.push({
+    role: 'assistant',
+    content: '',
+    charts: [],
+    traces: [],
+    done: false,
+    status: 'pending',
+  }); await nextTick(); scrollToBottom();
   isLoading.value = true;
+  const request = { controller: new AbortController(), reader: null, message: messages.value[messages.value.length - 1], stopped: false };
+  activeRequest.value = request;
   try {
     const threadId = chatStore.activeThreadId;
     const headers = { 'Content-Type': 'application/json' };
     if (userStore.token) headers.Authorization = userStore.token;
-    const res = await fetch(aiChatConfig.apiEndpoint, { method: 'POST', headers, body: JSON.stringify({ messages: [{ role: 'user', content: msg }], thread_id: threadId }) });
+    const res = await fetch(aiChatConfig.apiEndpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ messages: [{ role: 'user', content: msg }], thread_id: threadId }),
+      signal: request.controller.signal,
+    });
     if (!res.ok) throw new Error(`请求失败，状态码: ${res.status}`);
-    const reader = res.body.getReader(); const decoder = new TextDecoder(); let buf = '', ai = '';
+    const reader = res.body.getReader(); request.reader = reader;
+    const decoder = new TextDecoder(); let buf = '', ai = '';
     const lastIdx = () => messages.value.length - 1;
     while (true) {
       const { done, value } = await reader.read(); if (done) break;
+      if (request.stopped) break;
       buf += decoder.decode(value, { stream: true }); const lines = buf.split('\n'); buf = lines.pop() || '';
       for (const line of lines) {
+        if (request.stopped) break;
         if (!line.startsWith('data: ')) continue;
         const raw = line.slice(6); if (raw === '[DONE]') continue;
         try {
@@ -207,21 +298,72 @@ const sendMessage = async () => {
                 if (trace) { trace.result = j.result; trace.done = true; } }
               await nextTick(); scrollToBottom();
               break;
+            case 'chart':
+              messages.value[lastIdx()].charts.push(j.chart);
+              await nextTick(); scrollToBottom();
+              break;
             case 'text_delta':
+              messages.value[lastIdx()].status = 'generating';
               ai += j.content; messages.value[lastIdx()].content = ai; await nextTick(); scrollToBottom();
               break;
             case 'done':
               messages.value[lastIdx()].done = true;
+              messages.value[lastIdx()].status = 'done';
+              break;
+            case 'error':
+              messages.value[lastIdx()].content = j.message || 'AI 服务暂时不可用，请稍后重试。';
+              messages.value[lastIdx()].done = true;
+              messages.value[lastIdx()].status = 'error';
               break;
           }
         } catch (e) { console.error(e) }
       }
     }
-    if (!ai) messages.value[lastIdx()].content = '抱歉，AI 暂时无法生成回复，请稍后再试。';
-  } catch (e) { messages.value[messages.value.length - 1].content = `发生错误: ${e.message}` } finally { isLoading.value = false; await nextTick(); scrollToBottom() }
+    if (!ai && !request.stopped) {
+      messages.value[lastIdx()].content = '抱歉，AI 暂时无法生成回复，请稍后再试。';
+      messages.value[lastIdx()].status = 'error';
+    }
+  } catch (e) {
+    if (!request.stopped && e.name !== 'AbortError') {
+      request.message.content = `发生错误: ${e.message}`;
+      request.message.status = 'error';
+    }
+  } finally {
+    if (activeRequest.value === request) {
+      activeRequest.value = null;
+      isLoading.value = false;
+    }
+    request.message.done = true;
+    if (request.message.status === 'pending' || request.message.status === 'generating') {
+      request.message.status = request.stopped ? 'stopped' : 'done';
+    }
+    await nextTick(); scrollToBottom();
+  }
+};
+const stopGeneration = async () => {
+  const request = activeRequest.value;
+  if (!request || request.stopped) return;
+  request.stopped = true;
+  request.message.done = true;
+  request.message.status = 'stopped';
+  request.message.content = request.message.content
+    ? `${request.message.content}\n\n> 已停止生成。`
+    : '已停止生成。';
+  request.controller.abort();
+  if (request.reader) await request.reader.cancel();
+  await nextTick(); scrollToBottom();
 };
 watch(messages, () => nextTick(scrollToBottom), { deep: true });
 onMounted(async () => { scrollToBottom(); await chatStore.fetchConversations(); });
+onBeforeUnmount(() => {
+  if (activeRequest.value) {
+    activeRequest.value.stopped = true;
+    activeRequest.value.controller.abort();
+    activeRequest.value.reader?.cancel();
+  }
+  chartInstances.forEach((chart) => chart.dispose());
+  chartInstances.clear();
+});
 </script>
 <style scoped>
 .chat-page {
@@ -305,6 +447,12 @@ onMounted(async () => { scrollToBottom(); await chatStore.fetchConversations(); 
   background: radial-gradient(circle at 6px 8px, #fff8e7 60%, transparent 61%);
   filter: drop-shadow(-1px 1px 2px rgba(255, 200, 100, 0.1));
 }
+.stop-generation-btn {
+  display: block;
+  margin-top: 8px;
+  margin-left: 4px;
+  box-shadow: 0 3px 10px rgba(255, 152, 0, 0.2);
+}
 
 /* 用户云朵（右侧）—— 蓝天白云 */
 .user .msg-bubble {
@@ -380,6 +528,10 @@ onMounted(async () => { scrollToBottom(); await chatStore.fetchConversations(); 
   justify-content: center;
   color: var(--text-secondary);
 }
+.rag-upload-btn {
+  color: #5b6ee1;
+  font-weight: 600;
+}
 .input-row {
   display: flex;
   gap: 6px;
@@ -393,6 +545,12 @@ onMounted(async () => { scrollToBottom(); await chatStore.fetchConversations(); 
   backdrop-filter: blur(4px);
 }
 .send-btn { align-self: flex-end; flex-shrink: 0; }
+
+.chart-container {
+  width: 100%;
+  min-height: 300px;
+  margin-top: 12px;
+}
 
 /* Markdown 样式适配云朵 */
 .msg-bubble pre {
