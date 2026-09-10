@@ -100,8 +100,19 @@ services:
       REDIS_VECTOR_URL: "redis://redis-vector:6379"
       # Ollama（如果 Ollama 在宿主机上，用 host.docker.internal）
       OLLAMA_BASE_URL: "http://host.docker.internal:11434"
+      VISION_MODEL: "${VISION_MODEL:-qwen3-vl:4b-instruct-q4_K_M}"
+      VISION_TIMEOUT: "${VISION_TIMEOUT:-180}"
+      VISION_MAX_CONCURRENCY: "${VISION_MAX_CONCURRENCY:-1}"
+      VISION_MAX_IMAGE_SIDE: "${VISION_MAX_IMAGE_SIDE:-1024}"
+      VISION_NUM_CTX: "${VISION_NUM_CTX:-4096}"
+      VISION_NUM_PREDICT: "${VISION_NUM_PREDICT:-768}"
+      VISION_KEEP_ALIVE: "${VISION_KEEP_ALIVE:-30m}"
       # API Key（通过 .env 文件传入，不要硬编码）
       DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY}"
+      # 日志交给 Docker 日志驱动，避免应用在容器内重复维护文件
+      LOG_TO_FILE: "${LOG_TO_FILE:-false}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      DB_ECHO: "${DB_ECHO:-false}"
       # SearXNG（容器内用服务名连接）
       SEARXNG_HOST: "http://searxng:8080"
       # ===== 实时新闻采集（默认值即可，需要时在 .env 里覆盖）=====

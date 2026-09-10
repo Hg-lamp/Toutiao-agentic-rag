@@ -17,16 +17,21 @@ async def get_category_map(db:AsyncSession):
 
 async def get_news_list(db:AsyncSession,category_id:int=0,limit:int=10,skip:int=0):
     #按发布时间倒序，保证列表第一条永远是最新的
-    stmt=(select(News).
-          where(News.category_id==category_id).
-          order_by(News.publish_time.desc(),News.id.desc()).
-          offset(skip).
-          limit(limit))
+    stmt = select(News)
+    if category_id:
+        stmt = stmt.where(News.category_id == category_id)
+    stmt = (
+        stmt.order_by(News.publish_time.desc(), News.id.desc())
+        .offset(skip)
+        .limit(limit)
+    )
     result=await db.execute(stmt)
     return result.scalars().all()
 
 async def get_new_count(db:AsyncSession,category_id:int):
-    stmt =select(func.count(News.id)).where(News.category_id==category_id)
+    stmt = select(func.count(News.id))
+    if category_id:
+        stmt = stmt.where(News.category_id == category_id)
     result  = await db.execute(stmt)
     return result.scalar_one()
 

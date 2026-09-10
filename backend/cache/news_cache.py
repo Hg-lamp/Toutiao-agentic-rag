@@ -34,3 +34,8 @@ async def get_cache_news_list(category_id:Optional[int],page:int,size:int):
 async def invalidate_news_list_cache():
     deleted = await delete_cache_by_prefix(f"{NEWS_LIST_PREFIX}:")
     return deleted
+
+
+async def invalidate_categories_cache():
+    """频道结构变化后清除分类缓存，避免前端继续拿到旧频道列表。"""
+    return await delete_cache_by_prefix(CATEGORIES_KEY)

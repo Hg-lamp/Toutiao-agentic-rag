@@ -34,11 +34,14 @@ async def get_news_list(db:AsyncSession,category_id:int=0,limit:int=10,skip:int=
         return [News(**item) for item in cached_list]
     # 必须按发布时间倒序：没有 ORDER BY 时数据库返回的是插入顺序，
     # 老数据会一直排在前面，用户看到的就是「很久以前的新闻」。
-    stmt=(select(News).
-          where(News.category_id==category_id).
-          order_by(News.publish_time.desc(),News.id.desc()).
-          offset(skip).
-          limit(limit))
+    stmt = select(News)
+    if category_id:
+        stmt = stmt.where(News.category_id == category_id)
+    stmt = (
+        stmt.order_by(News.publish_time.desc(), News.id.desc())
+        .offset(skip)
+        .limit(limit)
+    )
     result=await db.execute(stmt)
     news_list= result.scalars().all()
     if news_list:

@@ -11,10 +11,13 @@ CHECKPOINTER_DATABASE_URL = os.getenv(
     "postgresql://postgres:postgres@localhost:5432/langgraph_db"
 )
 
+DB_ECHO = os.getenv("DB_ECHO", "false").strip().lower() in {
+    "1", "true", "yes", "on", "y",
+}
 
 async_engine = create_async_engine(
     ASYNC_DATABASE_URL,
-    echo=True,
+    echo=DB_ECHO,
     pool_size=10,
     max_overflow=20,
 )

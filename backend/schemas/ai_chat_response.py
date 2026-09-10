@@ -2,14 +2,17 @@ from datetime import datetime
 from typing import Optional, Annotated
 from pydantic import BaseModel, Field, ConfigDict
 
+from backend.config.upload_config import MAX_CHAT_ATTACHMENTS
+
 
 class MessageItem(BaseModel):
     role:str
     content:str
 
 class UserChatRequest(BaseModel):
-    messages: list[MessageItem]
+    messages: list[MessageItem] = Field(..., min_length=1)
     thread_id:Optional[str]
+    attachment_ids: list[str] = Field(default_factory=list, max_length=MAX_CHAT_ATTACHMENTS)
 
 
 class ReflectionResponse(BaseModel):
@@ -22,6 +25,15 @@ class UploadResponse(BaseModel):
     filename: str
     text: str
     size: int
+
+
+class AttachmentResponse(BaseModel):
+    """聊天图片附件上传结果。"""
+    attachment_id: str
+    filename: str
+    content_type: str
+    size: int
+    preview_url: str
 
 
 class RagUploadResponse(BaseModel):

@@ -1,4 +1,6 @@
 #整合 根据Token查询用户，返回用户
+from typing import Optional
+
 from fastapi import Header, Depends, HTTPException
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,9 +10,11 @@ from backend.crud import users
 
 
 async def get_current_user(
-        authorization:str = Header(...,alias='Authorization'),
+        authorization: Optional[str] = Header(default=None, alias='Authorization'),
         db :AsyncSession =Depends(get_db)
 ):
+    if not authorization:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="请先登录")
     token =authorization.replace("Bearer ","")
     user =await users.get_user_by_token(db,token)
     if not user:

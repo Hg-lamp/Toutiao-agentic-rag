@@ -15,6 +15,9 @@ export const aiChatConfig = {
   apiEndpoint: `${apiConfig.baseURL}/api/ai/chat`,
   // 文件上传接口地址
   uploadEndpoint: `${apiConfig.baseURL}/api/ai/upload`,
+  // 聊天图片附件上传接口
+  attachmentEndpoint: `${apiConfig.baseURL}/api/ai/attachments`,
+  deleteAttachmentEndpoint: (attachmentId) => `${apiConfig.baseURL}/api/ai/attachments/${attachmentId}`,
   ragUploadEndpoint: `${apiConfig.baseURL}/api/ai/rag-upload`,
   // 会话列表接口（按当前用户）
   conversationsEndpoint: `${apiConfig.baseURL}/api/ai/conversations`,

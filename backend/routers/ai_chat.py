@@ -9,13 +9,30 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import StreamingResponse
 
 from backend.config.mysql_config import get_db
-from backend.config.upload_config import ALLOWED_EXTENSIONS, MAX_FILE_SIZE, MAX_CHARS
+from backend.config.upload_config import (
+    AI_IMAGE_EXTENSIONS,
+    ALLOWED_EXTENSIONS,
+    MAX_CHARS,
+    MAX_FILE_SIZE,
+    MAX_IMAGE_FILE_SIZE,
+)
 from backend.crud.ai_chat import check_thread_id, generate, get_conversations, create_conversation_by_id, \
     get_messages_by_thread_id, delete_conversation_by_id
 from backend.models.users import User
 from backend.schemas.ai_chat_response import UserChatRequest, UploadResponse, RagUploadResponse, ConversationListResponse, \
-    ConversationResponse, MessageListResponse
+    ConversationResponse, MessageListResponse, AttachmentResponse
 from backend.services.file_parser import parse_content
+from backend.services.attachment_service import (
+    AttachmentError,
+    AttachmentNotFoundError,
+    attachment_service,
+)
+from backend.services.vision_service import (
+    VisionServiceError,
+    VisionTimeoutError,
+    VisionUnavailableError,
+    vision_service,
+)
 from backend.utils.auth import get_current_user
 from backend.utils.response import success_response
 from backend.config.redis_vector import retriever_database
@@ -25,10 +42,79 @@ import asyncio
 router = APIRouter(prefix="/api/ai", tags=["chat"])
 
 
+def _is_image_extension(extension: str) -> bool:
+    return extension in AI_IMAGE_EXTENSIONS
+
+
+async def _parse_uploaded_content(content: bytes, extension: str, filename: str) -> str:
+    """图片走共享视觉服务，其他文件继续走原解析器。"""
+    if _is_image_extension(extension):
+        return await vision_service.analyze_image(
+            content,
+            filename=filename,
+        )
+    return parse_content(content, extension)
+
+
+@router.post('/attachments', response_model=AttachmentResponse)
+async def upload_chat_attachment(
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+):
+    """上传聊天图片附件，暂不入库，等待用户发送消息时再分析。"""
+    extension = Path(file.filename or "").suffix.lower()
+    if not _is_image_extension(extension):
+        raise HTTPException(status_code=415, detail=f"不支持的图片类型: {extension}")
+    if file.content_type and not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=415, detail="上传文件不是有效图片")
+
+    content = await file.read()
+    if len(content) > MAX_IMAGE_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="图片过大，最大支持 10MB")
+
+    try:
+        attachment = await attachment_service.save_image(
+            user_id=user.id,
+            filename=file.filename or f"image{extension}",
+            content_type=file.content_type or "application/octet-stream",
+            content=content,
+        )
+    except AttachmentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return AttachmentResponse(**attachment.to_response())
+
+
+@router.delete('/attachments/{attachment_id}')
+async def delete_chat_attachment(
+    attachment_id: str,
+    user: User = Depends(get_current_user),
+):
+    """用户取消待发送图片时删除附件。"""
+    deleted = await attachment_service.delete(
+        user_id=user.id,
+        attachment_id=attachment_id,
+    )
+    return success_response(message="附件已删除" if deleted else "附件不存在")
+
+
 @router.post('/chat')
 async def chat(request_body: UserChatRequest, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    question = request_body.messages[-1].content.strip()
+    if not question and not request_body.attachment_ids:
+        raise HTTPException(status_code=400, detail="消息或图片至少需要提供一项")
+
+    try:
+        attachments = await attachment_service.get_many(
+            user_id=user.id,
+            attachment_ids=request_body.attachment_ids,
+        )
+    except AttachmentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    conversation_seed = question or (attachments[0].filename if attachments else "新会话")
     # 检查线程id
-    thread_id = await check_thread_id(request_body.thread_id, user.id, db, request_body.messages[-1].content)
+    thread_id = await check_thread_id(request_body.thread_id, user.id, db, conversation_seed)
     config:RunnableConfig = {
         "configurable": {
             "thread_id": thread_id,
@@ -37,11 +123,23 @@ async def chat(request_body: UserChatRequest, user: User = Depends(get_current_u
         "recursion_limit": 100,
     }
     # 流式返回结果
-    return StreamingResponse(generate(thread_id=thread_id, question=request_body.messages[-1].content, user_id=user.id,config=config),media_type="text/event-stream")
+    return StreamingResponse(
+        generate(
+            thread_id=thread_id,
+            question=question,
+            user_id=user.id,
+            attachments=attachments,
+            config=config,
+        ),
+        media_type="text/event-stream",
+    )
 
 
 @router.post('/upload', response_model=UploadResponse)
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+):
     """上传文件，解析文本内容后返回，不存盘，供对话上下文注入。"""
     # 1. 校验文件类型
     ext = Path(file.filename or "").suffix.lower()
@@ -52,14 +150,21 @@ async def upload_file(file: UploadFile = File(...)):
         )
     #2. 读取文件内容
     content = await file.read()
-    if len(content) > MAX_FILE_SIZE:
+    max_size = MAX_IMAGE_FILE_SIZE if _is_image_extension(ext) else MAX_FILE_SIZE
+    if len(content) > max_size:
         raise HTTPException(
             status_code=400,
-            detail=f"文件过大（{len(content) / 1024 / 1024:.1f}MB），最大支持 5MB"
+            detail=f"文件过大（{len(content) / 1024 / 1024:.1f}MB），最大支持 {max_size // 1024 // 1024}MB"
         )
     #3. 根据文件类型解析文本
     try:
-        text = parse_content(content, ext)
+        text = await _parse_uploaded_content(content, ext, file.filename or "unknown")
+    except VisionTimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except VisionUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except VisionServiceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"文件解析失败: {str(e)}")
     #4. 限制文本长度
@@ -84,10 +189,17 @@ async def upload_rag_file(
         raise HTTPException(status_code=400, detail=f"不支持的文件类型: {ext}")
 
     content = await file.read()
-    if len(content) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=400, detail="文件过大，最大支持 5MB")
+    max_size = MAX_IMAGE_FILE_SIZE if _is_image_extension(ext) else MAX_FILE_SIZE
+    if len(content) > max_size:
+        raise HTTPException(status_code=400, detail=f"文件过大，最大支持 {max_size // 1024 // 1024}MB")
     try:
-        text = parse_content(content, ext)
+        text = await _parse_uploaded_content(content, ext, file.filename or "unknown")
+    except VisionTimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except VisionUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except VisionServiceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"文件解析失败: {exc}") from exc
     if not text.strip():
@@ -109,7 +221,7 @@ async def upload_rag_file(
                 "user_id": str(user.id),
                 "document_id": document_id,
                 "source": file.filename or "unknown",
-                "category": "user_upload",
+                "category": "user_image" if _is_image_extension(ext) else "user_upload",
                 "chunk_index": index,
                 "num": index,
             },

@@ -15,6 +15,13 @@ from backend.agent.agent_graph import ai_response
 from backend.config.mysql_config import AsyncSessionLocal, CHECKPOINTER_DATABASE_URL
 from backend.models.conversations import Conversation
 from backend.models.messages import Message
+from backend.services.attachment_service import AttachmentNotFoundError, ChatAttachment
+from backend.services.vision_context import vision_context_service
+from backend.services.vision_service import VisionServiceError
+
+
+class VisionPreprocessSkipped(Exception):
+    """视觉预处理已失败，跳过主模型调用。"""
 
 
 async def check_thread_id(thread_id:str|None,user_id:int,db:AsyncSession,question:str):
@@ -58,25 +65,80 @@ TOOL_LABELS = {
     "agent": "任务分发",
     "get_memory": "记忆查询",
     "generate_chart": "图表生成",
+    "vision_analyze": "图片理解",
 }
 
 
-async def generate(thread_id:str,question:str,user_id:int,config:RunnableConfig):
+async def generate(
+    thread_id: str,
+    question: str,
+    user_id: int,
+    attachments: list[ChatAttachment],
+    config: RunnableConfig,
+):
     async with AsyncSessionLocal() as s:  # 独立 session
-        # ① 存用户消息
-        await add_message(db=s, thread_id=thread_id, role="user", content=question, user_id=user_id)
+        display_question = vision_context_service.build_display_question(
+            attachments,
+            question,
+        )
 
-        # ② 发 session_start（修复 meta 缺失）
+        # ① 存用户消息（图片以 Markdown 保留，历史记录可直接回显）
+        await add_message(db=s, thread_id=thread_id, role="user", content=display_question, user_id=user_id)
+
+        # ② 发 session_start
         conv = (await s.execute(
             select(Conversation).where(Conversation.conversation_id == thread_id)
         )).scalar_one_or_none()
-        title = conv.title if conv else question[:50]
+        title = conv.title if conv else (question[:50] or "图片对话")
         yield sse("session_start", thread_id=thread_id, title=title)
 
         full = ""
-        # ③ 遍历双流
+        agent_question = question
+        vision_failed = False
+
+        # ③ 图片理解作为确定性预处理，不交给主模型决定是否执行
+        if attachments:
+            vision_tool_id = str(uuid.uuid4())
+            yield sse(
+                "tool_start",
+                tool_id=vision_tool_id,
+                tool_name="vision_analyze",
+                tool_label=TOOL_LABELS["vision_analyze"],
+                tool_args={"count": len(attachments)},
+            )
+            try:
+                vision_context = await vision_context_service.build(
+                    attachments=attachments,
+                    question=question,
+                )
+                agent_question = vision_context.agent_question
+                yield sse(
+                    "tool_end",
+                    tool_id=vision_tool_id,
+                    tool_name="vision_analyze",
+                    tool_label=TOOL_LABELS["vision_analyze"],
+                    result=vision_context.summary,
+                )
+            except (VisionServiceError, AttachmentNotFoundError) as exc:
+                logger.warning(f"图片理解失败: {exc}")
+                error_message = f"图片理解失败：{exc}"
+                full = error_message
+                vision_failed = True
+                yield sse(
+                    "tool_end",
+                    tool_id=vision_tool_id,
+                    tool_name="vision_analyze",
+                    tool_label=TOOL_LABELS["vision_analyze"],
+                    result=error_message,
+                )
+                yield sse("error", message=error_message)
+
+        # ④ 将图片事实和用户问题交给主模型
         try:
-            async for event, data in ai_response(user_question=question, config=config):
+            if vision_failed:
+                raise VisionPreprocessSkipped
+
+            async for event, data in ai_response(user_question=agent_question, config=config):
                 # messages 流：文本 token
                 if event == "messages":
                     chunk, metadata = data
@@ -129,6 +191,8 @@ async def generate(thread_id:str,question:str,user_id:int,config:RunnableConfig)
                                         tool_label=TOOL_LABELS.get(msg_obj.name, msg_obj.name or "工具"),
                                         result=result_str,
                                     )
+        except VisionPreprocessSkipped:
+            pass
         except asyncio.CancelledError:
             # 客户端点击停止或断开连接时，立即终止上游模型流。
             logger.info("AI 流式响应被客户端中断")
@@ -144,10 +208,10 @@ async def generate(thread_id:str,question:str,user_id:int,config:RunnableConfig)
             full = full or error_message
             yield sse("error", message=error_message)
 
-        # ④ 存 AI 回答
+        # ⑤ 存 AI 回答
         await add_message(db=s, thread_id=thread_id, role="assistant", content=full, user_id=user_id)
 
-    # ⑤ 结束
+    # ⑥ 结束
     yield sse("done")
 
 async def get_conversations(user_id:int,db:AsyncSession,page_size:int,page:int=1):

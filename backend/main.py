@@ -1,4 +1,7 @@
+import os
+import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -6,8 +9,17 @@ from starlette.middleware.cors import CORSMiddleware
 
 from dotenv import load_dotenv
 
-# 加载 .env 文件到环境变量（必须在导入其他模块之前）
-load_dotenv()
+# 支持 `python backend/main.py` 直接启动，而不依赖当前工作目录。
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+# 始终加载项目根目录的 .env，避免在 PyCharm 中启动时漏掉配置。
+load_dotenv(PROJECT_ROOT / ".env")
+
+from backend.config.logging_config import setup_logging
+
+setup_logging()
 
 from backend.routers import news, favorite, users, history, ai_chat
 from backend.services.news_scheduler import start_scheduler, stop_scheduler
@@ -58,7 +70,6 @@ app.include_router(history.router)
 app.include_router(ai_chat.router)
 
 # 挂载静态文件目录（头像上传）
-import os
 uploads_dir = os.path.join(os.path.dirname(__file__), "uploads")
 os.makedirs(uploads_dir, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
@@ -70,4 +81,10 @@ async def root():
 
 if __name__=='__main__':
     import uvicorn
-    uvicorn.run("main:app",reload=True,host="localhost",port=8000)
+    uvicorn.run(
+        "backend.main:app",
+        reload=True,
+        reload_dirs=[str(PROJECT_ROOT)],
+        host="localhost",
+        port=8000,
+    )

@@ -25,6 +25,8 @@ venv/
 # 上传文件
 backend/uploads/avatars/*
 !backend/uploads/avatars/.gitkeep
+backend/uploads/ai/*
+!backend/uploads/ai/.gitkeep
 
 # 数据库
 *.db
@@ -32,6 +34,7 @@ backend/uploads/avatars/*
 
 # 日志
 *.log
+logs/
 
 # ==================== 前端 ====================
 fronted/node_modules/

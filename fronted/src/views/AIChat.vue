@@ -38,17 +38,23 @@
     <div class="chat-content">
       <div class="messages" ref="messagesContainer">
         <template v-for="(msg, index) in messages" :key="index">
-          <!-- 文件气泡：用户侧，右对齐，可点击删除 -->
-          <div v-if="msg.role === 'file'" class="msg file" @click="removeFileMsg(index)">
+          <!-- 图片附件与文件气泡优先于普通消息渲染 -->
+          <div v-if="msg.role === 'image'" class="msg image" @click="removeImageMsg(index)">
+            <div class="msg-label">你</div>
+            <div class="msg-bubble image-bubble">
+              <img class="pending-image" :src="msg.previewUrl" :alt="msg.name">
+              <div class="image-caption">{{ msg.name }} · 点击移除</div>
+            </div>
+          </div>
+          <div v-else-if="msg.role === 'file'" class="msg file" @click="removeFileMsg(index)">
             <div class="msg-label">你</div>
             <div class="msg-bubble">
               📄 {{ msg.name }}（{{ formatSize(msg.size) }}）
             </div>
           </div>
-          <!-- 普通消息气泡 -->
           <div v-else :class="['msg', msg.role === 'user' ? 'user' : 'ai']">
             <div class="msg-label">{{ msg.role === 'user' ? '你' : 'AI' }}</div>
-            <div class="msg-bubble">
+            <div class="msg-bubble" @click="handleMessageClick">
               <!-- 工具轨迹卡片 -->
               <div v-if="msg.traces && msg.traces.length" class="tool-traces">
                 <div v-for="trace in msg.traces" :key="trace.tool_id" class="trace-card">
@@ -89,16 +95,18 @@
       </div>
       <div class="input-area">
         <input type="file" ref="fileInput" @change="handleFileSelect" accept=".txt,.md,.csv,.pdf,.docx,.xlsx" style="display:none">
-        <input type="file" ref="ragFileInput" @change="handleRagFileSelect" accept=".txt,.md,.csv,.pdf,.docx,.xlsx" style="display:none">
+        <input type="file" ref="imageInput" @change="handleImageSelect" accept=".jpg,.jpeg,.png,.webp,.bmp" style="display:none">
+        <input type="file" ref="ragFileInput" @change="handleRagFileSelect" accept=".txt,.md,.csv,.pdf,.docx,.xlsx,.jpg,.jpeg,.png,.webp,.bmp" style="display:none">
         <div class="upload-bar">
           <van-button class="upload-btn" :disabled="isUploading" @click="triggerUpload">{{ isUploading ? '⏳' : 'file' }}</van-button>
+          <van-button class="upload-btn image-upload-btn" :disabled="isImageUploading" @click="triggerImageUpload">{{ isImageUploading ? '⏳' : 'IMG' }}</van-button>
           <van-button class="upload-btn rag-upload-btn" :disabled="isRagUploading" @click="triggerRagUpload">
             {{ isRagUploading ? '⏳' : 'RAG' }}
           </van-button>
         </div>
         <div class="input-row">
           <van-field v-model="userInput" rows="1" autosize type="textarea" placeholder="请输入问题..." class="chat-input" @keypress.enter.prevent="sendMessage" />
-          <van-button type="primary" class="send-btn" :disabled="isLoading || !userInput.trim()" @click="sendMessage">发送</van-button>
+          <van-button type="primary" class="send-btn" :disabled="isLoading || (!userInput.trim() && !hasPendingImage)" @click="sendMessage">发送</van-button>
         </div>
       </div>
     </div>
@@ -106,12 +114,13 @@
   </div>
 </template>
 <script setup>
-import { showDialog } from 'vant';
-import { ref, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'; import TabBar from '../components/TabBar.vue'; import * as marked from 'marked'; import DOMPurify from 'dompurify'; import * as echarts from 'echarts'; import { aiChatConfig } from '../config/api'; import { useChatStore } from '../store/modules/chat'; import { useUserStore } from '../store/user';
+import { showDialog, showImagePreview } from 'vant';
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'; import TabBar from '../components/TabBar.vue'; import * as marked from 'marked'; import DOMPurify from 'dompurify'; import * as echarts from 'echarts'; import { aiChatConfig } from '../config/api'; import { useChatStore } from '../store/modules/chat'; import { useUserStore } from '../store/user';
 const messages = ref([{ role: 'assistant', content: '你好，我是鼠鼠小助手，有什么需要我帮忙的吗？' }]);
 const userInput = ref(''); const messagesContainer = ref(null); const isLoading = ref(false);
 const activeRequest = ref(null);
 const isUploading = ref(false); const fileInput = ref(null);
+const isImageUploading = ref(false); const imageInput = ref(null);
 const isRagUploading = ref(false); const ragFileInput = ref(null);
 const chatStore = useChatStore(); const userStore = useUserStore(); const sidebarVisible = ref(false);
 const chartInstances = new Map();
@@ -126,6 +135,18 @@ const setChartRef = (el, messageIndex, chartIndex) => {
   chartInstances.set(key, instance);
 };
 const formatMessage = (c) => c ? DOMPurify.sanitize(marked.parse(c)) : '';
+const handleMessageClick = (event) => {
+  const image = event.target;
+  if (!(image instanceof HTMLImageElement)) return;
+  const src = image.currentSrc || image.src;
+  if (!src) return;
+  showImagePreview({
+    images: [src],
+    startPosition: 0,
+    closeable: true,
+    loop: false,
+  });
+};
 const parseStoredMessage = (content) => {
   const charts = [];
   const cleanContent = (content || '').replace(/<!-- AI_CHART:(.*?) -->/gs, (_, raw) => {
@@ -140,15 +161,19 @@ const parseStoredMessage = (content) => {
   return { content: cleanContent, charts };
 };
 const formatSize = (bytes) => { if (bytes < 1024) return bytes + 'B'; if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + 'KB'; return (bytes / 1024 / 1024).toFixed(1) + 'MB'; };
+const hasPendingImage = computed(() => messages.value.some((msg) => msg.role === 'image'));
 const scrollToBottom = () => { if (messagesContainer.value) messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight };
 const triggerUpload = () => { if (!isUploading.value) fileInput.value.click() };
+const triggerImageUpload = () => { if (!isImageUploading.value) imageInput.value.click() };
 const triggerRagUpload = () => { if (!isRagUploading.value) ragFileInput.value.click() };
 const handleFileSelect = async (e) => {
   const file = e.target.files[0]; if (!file) return;
   isUploading.value = true;
   try {
     const fd = new FormData(); fd.append('file', file);
-    const res = await fetch(aiChatConfig.uploadEndpoint, { method: 'POST', body: fd });
+    const headers = {};
+    if (userStore.token) headers.Authorization = userStore.token;
+    const res = await fetch(aiChatConfig.uploadEndpoint, { method: 'POST', headers, body: fd });
     if (!res.ok) { const err = await res.json(); throw new Error(err.detail || `上传失败: ${res.status}`); }
     const data = await res.json();
     // 在消息列表末尾插入文件气泡（用户侧）
@@ -156,6 +181,40 @@ const handleFileSelect = async (e) => {
     await nextTick(); scrollToBottom();
   } catch (e) { messages.value.push({ role: 'assistant', content: `⚠️ 文件上传失败: ${e.message}` }); await nextTick(); scrollToBottom(); }
   finally { isUploading.value = false; e.target.value = ''; }
+};
+const handleImageSelect = async (e) => {
+  const file = e.target.files[0]; if (!file) return;
+  if (messages.value.filter((msg) => msg.role === 'image').length >= 2) {
+    messages.value.push({ role: 'assistant', content: '⚠️ 单次最多上传 2 张图片' });
+    e.target.value = '';
+    return;
+  }
+
+  isImageUploading.value = true;
+  try {
+    const fd = new FormData(); fd.append('file', file);
+    const headers = {};
+    if (userStore.token) headers.Authorization = userStore.token;
+    const res = await fetch(aiChatConfig.attachmentEndpoint, { method: 'POST', headers, body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || data.message || `图片上传失败: ${res.status}`);
+
+    const attachment = data.data || data;
+    messages.value.push({
+      role: 'image',
+      attachmentId: attachment.attachment_id,
+      name: attachment.filename,
+      size: attachment.size,
+      previewUrl: attachment.preview_url,
+    });
+    await nextTick(); scrollToBottom();
+  } catch (error) {
+    messages.value.push({ role: 'assistant', content: `⚠️ 图片上传失败: ${error.message}` });
+    await nextTick(); scrollToBottom();
+  } finally {
+    isImageUploading.value = false;
+    e.target.value = '';
+  }
 };
 const handleRagFileSelect = async (e) => {
   const file = e.target.files[0]; if (!file) return;
@@ -185,6 +244,23 @@ const handleRagFileSelect = async (e) => {
 };
 const removeFileMsg = (index) => {
   messages.value.splice(index, 1);
+};
+const removeImageMsg = async (index) => {
+  const imageMessage = messages.value[index];
+  if (!imageMessage || imageMessage.role !== 'image') return;
+  messages.value.splice(index, 1);
+  if (!imageMessage.attachmentId) return;
+
+  try {
+    const headers = {};
+    if (userStore.token) headers.Authorization = userStore.token;
+    await fetch(aiChatConfig.deleteAttachmentEndpoint(imageMessage.attachmentId), {
+      method: 'DELETE',
+      headers,
+    });
+  } catch (error) {
+    console.warn('删除图片附件失败:', error);
+  }
 };
 const formatTime = (iso) => {
   if (!iso) return '';
@@ -240,7 +316,7 @@ const confirmDeleteConversation = async (conv) => {
 };
 const sendMessage = async () => {
   let msg = userInput.value.trim();
-  if (!msg || isLoading.value) return;
+  if (isLoading.value) return;
   // 检查是否有文件气泡在消息列表中，找到最新的文件气泡
   const fileIdx = messages.value.findLastIndex(m => m.role === 'file');
   if (fileIdx !== -1) {
@@ -248,7 +324,20 @@ const sendMessage = async () => {
     msg = `用户上传了文件 ${file.name}，内容如下：\n\`\`\`\n${file.text}\n\`\`\`\n\n${msg}`;
     messages.value.splice(fileIdx, 1); // 发送后移除文件气泡
   }
-  messages.value.push({ role: 'user', content: msg }); userInput.value = '';
+  const imageMessages = messages.value
+    .map((message, index) => ({ message, index }))
+    .filter(({ message }) => message.role === 'image');
+  const attachmentIds = imageMessages.map(({ message }) => message.attachmentId).filter(Boolean);
+  const imageMarkdown = imageMessages
+    .map(({ message }) => `![${message.name.replace(/[\[\]]/g, '')}](${message.previewUrl})`)
+    .join('\n');
+  const userContent = [imageMarkdown, msg].filter(Boolean).join('\n\n');
+  if (!userContent) return;
+
+  for (const { index } of imageMessages.sort((a, b) => b.index - a.index)) {
+    messages.value.splice(index, 1);
+  }
+  messages.value.push({ role: 'user', content: userContent }); userInput.value = '';
   messages.value.push({
     role: 'assistant',
     content: '',
@@ -267,7 +356,11 @@ const sendMessage = async () => {
     const res = await fetch(aiChatConfig.apiEndpoint, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ messages: [{ role: 'user', content: msg }], thread_id: threadId }),
+      body: JSON.stringify({
+        messages: [{ role: 'user', content: msg }],
+        thread_id: threadId,
+        attachment_ids: attachmentIds,
+      }),
       signal: request.controller.signal,
     });
     if (!res.ok) throw new Error(`请求失败，状态码: ${res.status}`);
@@ -405,6 +498,13 @@ onBeforeUnmount(() => {
 }
 .file:hover { opacity: 0.7; }
 
+.image {
+  margin-left: auto;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+.image:hover { opacity: 0.82; }
+
 .msg-label {
   font-size: 12px;
   font-weight: 400;
@@ -498,6 +598,27 @@ onBeforeUnmount(() => {
   filter: drop-shadow(1px 1px 2px rgba(100, 200, 100, 0.08));
 }
 
+.image-bubble {
+  padding: 8px !important;
+  background: linear-gradient(145deg, #edf7ff, #dfeffb) !important;
+  border: 1px solid rgba(100, 180, 255, 0.28) !important;
+}
+.image-bubble::before { display: none; }
+.pending-image {
+  display: block;
+  width: min(220px, 58vw);
+  max-height: 240px;
+  object-fit: cover;
+  border-radius: 18px;
+}
+.image-caption {
+  margin-top: 6px;
+  padding: 0 4px 2px;
+  color: #5a5a7a;
+  font-size: 12px;
+  text-align: center;
+}
+
 /* 云朵悬停效果 */
 .msg-bubble:hover {
   transform: translateY(-2px) scale(1.01);
@@ -530,6 +651,10 @@ onBeforeUnmount(() => {
 }
 .rag-upload-btn {
   color: #5b6ee1;
+  font-weight: 600;
+}
+.image-upload-btn {
+  color: #2f855a;
   font-weight: 600;
 }
 .input-row {
@@ -572,14 +697,25 @@ onBeforeUnmount(() => {
   font-size: 14px;
 }
 .user .msg-bubble code { background: rgba(255, 255, 255, 0.3); }
-.msg-bubble img {
-  max-width: 100%;
+.msg-bubble :deep(img) {
+  display: block !important;
+  width: auto !important;
+  max-width: min(230px, 56vw) !important;
+  max-height: 280px !important;
+  height: auto !important;
+  object-fit: contain;
+  margin: 4px auto;
   border-radius: 16px;
   box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+  cursor: zoom-in;
 }
-.msg-bubble p { margin: 6px 0; }
-.msg-bubble ul, .msg-bubble ol { padding-left: 20px; margin: 6px 0; }
-.msg-bubble a {
+.user .msg-bubble :deep(img) {
+  max-width: min(210px, 52vw) !important;
+  max-height: 260px !important;
+}
+.msg-bubble :deep(p) { margin: 6px 0; }
+.msg-bubble :deep(ul), .msg-bubble :deep(ol) { padding-left: 20px; margin: 6px 0; }
+.msg-bubble :deep(a) {
   color: #4060d0;
   text-decoration: underline;
   text-underline-offset: 2px;

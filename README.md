@@ -21,8 +21,9 @@
   - 互联网搜索工具（SearXNG）
   - 子 Agent 任务分发
   - ReAct 循环（recursion_limit 100）
-- **文件上传分析** — 支持上传 TXT/MD/PDF/DOCX/XLSX/CSV，自动解析文本内容注入对话上下文
-- **个人知识库** — 文件切分后写入用户专属 Redis 向量索引
+- **文件上传分析** — 支持 TXT/MD/PDF/DOCX/XLSX/CSV，自动解析文本内容注入对话上下文
+- **图片对话理解** — 使用本地 Qwen3-VL 提取场景、对象、关系、文字和图表信息，再交给主模型回答
+- **个人知识库** — 文本文件或图片解析后切分并写入用户专属 Redis 向量索引
 - **对话持久化** — 基于 MySQL 保存会话、消息和记忆，PostgreSQL/LangGraph Checkpoint 保存图状态
 - **会话管理** — 会话列表、历史消息查看、删除会话
 - **对话记忆** — 提取并持久化用户长期偏好，辅助后续回答
@@ -34,6 +35,7 @@
 | Web 框架 | FastAPI | 后端 API 框架 |
 | AI 引擎 | LangGraph | 智能体编排 |
 | LLM | DeepSeek | 大语言模型 |
+| 视觉模型 | Ollama (qwen3-vl:4b-instruct-q4_K_M) | 图片场景理解、OCR 与视觉上下文提取 |
 | 嵌入模型 | Ollama (qwen3-embedding:0.6b) | 文本向量化 |
 | 向量存储 | Redis (RediSearch) | 向量索引与检索 |
 | 缓存 | Redis | 数据缓存 |
@@ -249,6 +251,8 @@ Toutiao_course/
 | AI | `GET /api/ai/conversations/{id}/messages` | 获取会话消息 |
 | AI | `DELETE /api/ai/conversations/{id}` | 删除会话 |
 | 文件 | `POST /api/ai/upload` | 解析文件并返回文本（5MB 限制） |
+| 文件 | `POST /api/ai/attachments` | 上传聊天图片附件，发送消息时调用视觉模型 |
+| 文件 | `DELETE /api/ai/attachments/{attachment_id}` | 删除当前用户的待发送图片附件 |
 | 文件 | `POST /api/ai/rag-upload` | 上传文件并写入当前用户知识库 |
 
 ## 环境变量
@@ -263,6 +267,9 @@ Toutiao_course/
 | `REDIS_DB` | Redis 缓存数据库编号 | `0` |
 | `REDIS_VECTOR_URL` | 向量存储 Redis URL | `redis://localhost:6380` |
 | `OLLAMA_BASE_URL` | Ollama 服务地址 | `http://localhost:11434` |
+| `VISION_MODEL` | Ollama 视觉模型 | `qwen3-vl:4b-instruct-q4_K_M` |
+| `VISION_MAX_CONCURRENCY` | 视觉模型并发数（6GB 显存建议为 1） | `1` |
+| `VISION_MAX_IMAGE_SIDE` | 图片送入模型前的最长边 | `1024` |
 | `SEARXNG_HOST` | SearXNG 搜索引擎地址 | `http://localhost:8080` |
 | `SEARXNG_SECRET_KEY` | SearXNG 密钥 | 可选 |
 | `NEWS_REALTIME_ENABLED` | 实时新闻总开关 | `true` |
@@ -301,11 +308,13 @@ Toutiao_course/
 - `.pdf` — PDF 文档（自动提取文本）
 - `.docx` — Word 文档（自动提取文本）
 - `.xlsx` — Excel 表格（自动提取所有工作表）
+- `.jpg` / `.jpeg` / `.png` / `.webp` / `.bmp` — 图片场景理解与 OCR
 
 限制：
 - 单文件最大 5MB
 - 解析文本最大 10 万字（超出截断）
-- 上传后不存盘，文本内容直接注入对话上下文
+- 聊天图片保存在 `backend/uploads/ai/{user_id}`，用于消息历史和预览
+- 文本文件上传后不存盘，内容直接注入对话上下文
 
 ## 开发计划
 

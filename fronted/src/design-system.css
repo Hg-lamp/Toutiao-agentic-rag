@@ -71,7 +71,9 @@
   --van-nav-bar-background: var(--bg-card);
   --van-nav-bar-border-color: var(--border-light);
   --van-popup-background: var(--bg-dark);
-  --van-toast-background: rgba(255, 255, 255, 0.9);
+  --van-toast-background: rgba(17, 20, 28, 0.94);
+  --van-toast-text-color: #ffffff;
+  --van-toast-loading-icon-color: #ffffff;
   --van-empty-description-color: var(--text-tertiary);
   --van-grid-item-content-background: var(--bg-card);
   --van-dialog-header-font-weight: 600;
@@ -85,6 +87,11 @@
   --van-tabbar-border-color: var(--border-light);
   --van-tabs-bottom-bar-width: 20px;
   --van-nav-bar-arrow-size: 18px;
+}
+
+.van-toast {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
 }
 
 /* ----- 全局重置 ----- */

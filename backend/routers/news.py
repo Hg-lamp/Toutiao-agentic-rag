@@ -29,7 +29,14 @@ router = APIRouter(prefix='/api/news',tags=['news'])
 
 def _fmt_time(value: Optional[datetime]) -> Optional[str]:
     """统一时间格式：前端 new Date('2026-09-10T19:21:25') 可直接解析。"""
-    return value.strftime("%Y-%m-%dT%H:%M:%S") if value else None
+    if not value:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return value
+    return value.strftime("%Y-%m-%dT%H:%M:%S")
 
 
 def serialize_news(item: News, category_names: Optional[dict] = None) -> dict:

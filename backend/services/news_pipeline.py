@@ -11,7 +11,10 @@ from loguru import logger
 from sqlalchemy import case, delete, func, select
 from sqlalchemy.exc import IntegrityError
 
-from backend.cache.news_cache import invalidate_news_list_cache
+from backend.cache.news_cache import (
+    invalidate_categories_cache,
+    invalidate_news_list_cache,
+)
 from backend.config import news_config
 from backend.config.mysql_config import AsyncSessionLocal
 from backend.models.news import Category, News
@@ -221,6 +224,7 @@ async def _refresh_news(trigger: str) -> dict:
         now = datetime.now()
         async with AsyncSessionLocal() as db:
             categories = await ensure_categories(db)
+            await invalidate_categories_cache()
             if not categories:
                 stats["errors"].append("news_category 表为空且自动创建失败，无法入库")
                 stats["duration_ms"] = int((datetime.now() - started).total_seconds() * 1000)
