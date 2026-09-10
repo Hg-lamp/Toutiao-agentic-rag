@@ -1,4 +1,5 @@
 import asyncio
+import os
 from logging.config import fileConfig
 
 from dotenv import load_dotenv
@@ -46,6 +47,11 @@ def do_run_migrations(connection):
 async def run_async_migrations() -> None:
     """异步在线模式（适配项目使用的 aiomysql）"""
     configuration = config.get_section(config.config_ini_section, {})
+    # 环境变量优先：容器里 DATABASE_URL 指向 mysql 服务名，
+    # 而 alembic.ini 里写死的是 localhost，直接读 ini 会连错库。
+    configuration["sqlalchemy.url"] = os.getenv(
+        "DATABASE_URL", config.get_main_option("sqlalchemy.url")
+    )
     connectable = async_engine_from_config(
         configuration,
         prefix="sqlalchemy.",

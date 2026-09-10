@@ -104,6 +104,13 @@ services:
       DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY}"
       # SearXNG（容器内用服务名连接）
       SEARXNG_HOST: "http://searxng:8080"
+      # ===== 实时新闻采集（默认值即可，需要时在 .env 里覆盖）=====
+      # 注意：实时新闻依赖 news 表的新字段，启动前需执行 alembic upgrade head
+      NEWS_REALTIME_ENABLED: "${NEWS_REALTIME_ENABLED:-true}"
+      NEWS_REFRESH_INTERVAL_MINUTES: "${NEWS_REFRESH_INTERVAL_MINUTES:-30}"
+      NEWS_DAILY_REFRESH_HOUR: "${NEWS_DAILY_REFRESH_HOUR:-7}"
+      NEWS_REFRESH_TOKEN: "${NEWS_REFRESH_TOKEN:-}"
+      NEWS_SEARXNG_CHANNELS: "${NEWS_SEARXNG_CHANNELS:-}"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=3)"]
       interval: 30s

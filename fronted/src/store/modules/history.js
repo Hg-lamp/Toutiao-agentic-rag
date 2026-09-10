@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import axios from 'axios';
 import { useUserStore } from '../user';
 import { apiConfig } from '../../config/api';
+import { normalizeNewsList } from '../../utils/news';
 
 export const useHistoryStore = defineStore('history', {
   state: () => ({
@@ -181,7 +182,7 @@ export const useHistoryStore = defineStore('history', {
         
         if (response.data.code === 200) {
           // 正确获取list数组
-          const historyList = response.data.data.list || [];
+          const historyList = normalizeNewsList(response.data.data.list || []);
           // console.log(`获取浏览历史API：成功获取${historyList.length}条记录`, response.data.data);
           // 更新本地历史记录
           this.history = historyList;

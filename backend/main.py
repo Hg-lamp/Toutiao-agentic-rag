@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
@@ -8,9 +10,25 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from backend.routers import news, favorite, users, history, ai_chat
+from backend.services.news_scheduler import start_scheduler, stop_scheduler
 from backend.utils.exception_handler import register_exception_handlers
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期：启动实时新闻调度器，关闭时优雅停止。
+
+    调度器是后台常驻任务，不会阻塞启动流程
+    （首次抓取在后台跑，接口立即可用）。
+    """
+    await start_scheduler()
+    try:
+        yield
+    finally:
+        await stop_scheduler()
+
+
+app = FastAPI(lifespan=lifespan)
 
 #注册异常处理器
 register_exception_handlers(app)

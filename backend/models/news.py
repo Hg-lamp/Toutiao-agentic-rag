@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, Integer, String, Index, Text
+from sqlalchemy import Boolean, DateTime, Integer, String, Index, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.models import Base
@@ -31,6 +31,11 @@ class News(Base):
     __table_args__ = (
         Index('fk_news_category_idx', 'category_id'),
         Index('idx_publish_time', 'publish_time'),
+        # 列表页「分类内按发布时间倒序分页」的复合索引
+        Index('idx_news_category_publish', 'category_id', 'publish_time'),
+        # 采集去重：同一条新闻只入库一次（老数据该字段为 NULL，不受影响，
+        # MySQL 的唯一索引允许多个 NULL）
+        Index('idx_news_url_hash', 'url_hash', unique=True),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, comment="新闻id")
@@ -47,6 +52,23 @@ class News(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间"
+    )
+
+    # ==================== 实时采集相关字段 ====================
+    source: Mapped[Optional[str]] = mapped_column(
+        String(50), comment="来源媒体，例如 人民网 / 新华网"
+    )
+    source_url: Mapped[Optional[str]] = mapped_column(
+        String(500), comment="原文链接"
+    )
+    url_hash: Mapped[Optional[str]] = mapped_column(
+        String(40), comment="原文链接指纹，用于采集去重"
+    )
+    is_live: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="0", comment="是否实时采集入库"
+    )
+    fetched_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, comment="采集时间"
     )
 
     def __repr__(self):

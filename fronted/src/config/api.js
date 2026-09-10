@@ -23,3 +23,17 @@ export const aiChatConfig = {
   // 删除单个会话
   deleteConversationEndpoint: (threadId) => `${apiConfig.baseURL}/api/ai/conversations/${threadId}`,
 }
+
+// 新闻接口配置（实时新闻）
+export const newsConfig = {
+  categoriesEndpoint: `${apiConfig.baseURL}/api/news/categories`,
+  listEndpoint: `${apiConfig.baseURL}/api/news/list`,
+  latestEndpoint: `${apiConfig.baseURL}/api/news/latest`,
+  detailEndpoint: `${apiConfig.baseURL}/api/news/detail`,
+  // 手动触发一次实时抓取
+  refreshEndpoint: `${apiConfig.baseURL}/api/news/refresh`,
+  // 采集运行状态（最近更新时间、各频道条数）
+  statusEndpoint: `${apiConfig.baseURL}/api/news/status`,
+  // 当前启用的新闻来源
+  sourcesEndpoint: `${apiConfig.baseURL}/api/news/sources`,
+}

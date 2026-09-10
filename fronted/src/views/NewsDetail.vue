@@ -5,9 +5,10 @@
       <div class="article-header">
         <h1 class="article-title">{{ newsStore.newsDetail.title }}</h1>
         <div class="article-meta">
-          <span class="article-author">{{ newsStore.newsDetail.author }}</span>
+          <span class="article-badge" v-if="newsStore.newsDetail.isLive">实时</span>
+          <span class="article-author">{{ newsStore.newsDetail.source || newsStore.newsDetail.author }}</span>
           <span class="meta-sep">/</span>
-          <span>{{ newsStore.newsDetail.publishTime }}</span>
+          <span :title="absoluteTime">{{ relativeTime }}</span>
           <span class="meta-sep">/</span>
           <span class="article-views">{{ newsStore.newsDetail.views }} 阅读</span>
         </div>
@@ -17,11 +18,16 @@
         </van-button>
       </div>
       <div class="article-cover" v-if="newsStore.newsDetail.image">
-        <img :src="newsStore.newsDetail.image" :alt="newsStore.newsDetail.title" />
+        <img :src="newsStore.newsDetail.image" :alt="newsStore.newsDetail.title" @error="onImageError" />
       </div>
       <div class="article-body">
         <p v-for="(paragraph, index) in contentParagraphs" :key="index">{{ paragraph }}</p>
       </div>
+      <a class="article-source-link" v-if="newsStore.newsDetail.sourceUrl"
+         :href="newsStore.newsDetail.sourceUrl" target="_blank" rel="noopener noreferrer">
+        查看原文 · {{ newsStore.newsDetail.source || '来源' }}
+        <van-icon name="arrow" />
+      </a>
       <div class="article-divider"></div>
       <div class="related-news" v-if="newsStore.newsDetail.relatedNews?.length">
         <h3 class="related-title">相关推荐</h3>
@@ -44,14 +50,18 @@ import { useHistoryStore } from '../store/modules/history'
 import { useFavoriteStore } from '../store/modules/favorite'
 import { useUserStore } from '../store/user'
 import { showToast } from 'vant'
+import { formatAbsoluteTime, formatRelativeTime } from '../utils/news'
 const route = useRoute(); const router = useRouter()
 const newsStore = useNewsStore(); const historyStore = useHistoryStore()
 const favoriteStore = useFavoriteStore(); const userStore = useUserStore()
 const newsId = computed(() => Number(route.params.id))
+const relativeTime = computed(() => formatRelativeTime(newsStore.newsDetail.publishTime))
+const absoluteTime = computed(() => formatAbsoluteTime(newsStore.newsDetail.publishTime))
 const contentParagraphs = computed(() => {
   if (!newsStore.newsDetail.content) return []
-  return newsStore.newsDetail.content.split('\n\n').filter(p => p.trim())
+  return newsStore.newsDetail.content.split(/\n{2,}/).map(p => p.trim()).filter(Boolean)
 })
+const onImageError = (event) => { event.target.parentElement.style.display = 'none' }
 const onClickLeft = () => router.back()
 const goToRelatedNews = (id) => router.push(`/news/detail/${id}`)
 const isFavorite = computed(() => favoriteStore.isFavorite(newsId.value))
@@ -84,8 +94,12 @@ onMounted(async () => {
 .article-title { font-size: 22px; font-weight: 700; line-height: 1.45; margin: 0 0 12px; color: var(--text-primary); letter-spacing: 0.01em; }
 .article-meta { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); flex-wrap: wrap; }
 .article-author { font-weight: 500; color: var(--accent-purple); }
+.article-badge { display: inline-flex; align-items: center; height: 16px; padding: 0 6px; border-radius: 3px; font-size: 10px; font-weight: 600; color: #fff; background: linear-gradient(135deg, var(--accent-pink), var(--accent-purple)); }
 .meta-sep { color: var(--border-light); }
 .article-views { font-family: var(--font-mono); font-size: 11px; letter-spacing: -0.02em; }
+/* 实时采集的新闻保留原文链接，方便溯源 */
+.article-source-link { display: flex; align-items: center; justify-content: space-between; margin: 18px 16px 0; padding: 11px 14px; border-radius: 8px; font-size: 13px; color: var(--accent-purple); text-decoration: none; background: var(--bg-card); border: 1px solid var(--border-light); box-shadow: var(--shadow-card); }
+.article-source-link:active { border-color: var(--border-hover); }
 .favorite-btn { position: absolute; right: 16px; top: 20px; font-size: 12px; border-color: var(--border-light); color: var(--text-secondary) !important; }
 .favorite-btn.is-favorite { color: var(--accent-pink) !important; border-color: var(--accent-pink) !important; }
 .article-cover { margin: 0 16px 16px; border-radius: 10px; overflow: hidden; box-shadow: var(--shadow-card); }

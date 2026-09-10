@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import axios from 'axios';
 import { useUserStore } from '../user';
 import { apiConfig } from '../../config/api';
+import { normalizeNewsList } from '../../utils/news';
 
 export const useFavoriteStore = defineStore('favorite', {
   state: () => ({
@@ -255,7 +256,7 @@ export const useFavoriteStore = defineStore('favorite', {
         
         if (response.data.code === 200) {
           // 更新本地收藏列表
-          this.favorites = response.data.data.list;
+          this.favorites = normalizeNewsList(response.data.data.list);
           return { success: true, data: response.data.data };
         } else {
           return { success: false, message: response.data.message || '获取收藏列表失败' };

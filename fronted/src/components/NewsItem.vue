@@ -2,32 +2,50 @@
   <div class="news-card" @click="goToDetail">
     <div class="news-card__content">
       <h3 class="news-card__title">{{ news.title }}</h3>
-      <p class="news-card__desc">{{ news.description }}</p>
+      <p class="news-card__desc" v-if="news.description">{{ news.description }}</p>
       <div class="news-card__meta">
-        <span class="news-card__author">{{ news.author }}</span>
+        <span class="news-card__badge" v-if="news.isLive">实时</span>
+        <span class="news-card__author">{{ news.source || news.author }}</span>
         <span class="meta-dot">·</span>
-        <span class="news-card__time">{{ news.publishTime }}</span>
+        <span class="news-card__time">{{ relativeTime }}</span>
         <span class="meta-dot">·</span>
         <span class="news-card__views">{{ news.views }} 阅读</span>
       </div>
     </div>
     <div class="news-card__image" v-if="news.image">
-      <img :src="news.image" :alt="news.title" loading="lazy" />
+      <img :src="news.image" :alt="news.title" loading="lazy" @error="onImageError" />
     </div>
   </div>
 </template>
 
 <script setup>
+import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
+import { formatRelativeTime } from '../utils/news'
 
 const props = defineProps({
   news: { type: Object, required: true }
 })
 
 const router = useRouter()
+const now = ref(Date.now())
+let timer = null
+
+// 相对时间会随时间变化，每分钟重算一次
+onMounted(() => {
+  timer = setInterval(() => { now.value = Date.now() }, 60 * 1000)
+})
+onBeforeUnmount(() => { if (timer) clearInterval(timer) })
+
+const relativeTime = computed(() => formatRelativeTime(props.news.publishTime, now.value))
 
 const goToDetail = () => {
   router.push(`/news/detail/${props.news.id}`)
+}
+
+// 部分来源的图片有防盗链，加载失败时直接隐藏，避免出现破图
+const onImageError = (event) => {
+  event.target.style.display = 'none'
 }
 </script>
 
@@ -100,6 +118,20 @@ const goToDetail = () => {
 .news-card__author {
   color: var(--accent-purple);
   font-weight: 500;
+}
+
+/* 「实时」角标：来自自动采集的当日新闻 */
+.news-card__badge {
+  display: inline-flex;
+  align-items: center;
+  height: 15px;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #fff;
+  background: linear-gradient(135deg, var(--accent-pink), var(--accent-purple));
 }
 
 .meta-dot {

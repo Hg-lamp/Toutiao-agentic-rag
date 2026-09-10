@@ -1,6 +1,11 @@
 import { defineStore } from 'pinia'
 import axios from 'axios'
-import { apiConfig } from '../../config/api'
+import { apiConfig, newsConfig } from '../../config/api'
+import { normalizeNews, normalizeNewsList } from '../../utils/news'
+
+const PAGE_SIZE = 10
+// 列表页自动刷新间隔：新闻是分钟级产品，3 分钟足够「实时」
+const AUTO_REFRESH_MS = 3 * 60 * 1000
 
 export const useNewsStore = defineStore('news', {
   state: () => ({
@@ -8,34 +13,47 @@ export const useNewsStore = defineStore('news', {
     newsDetail: {},
     categories: [],
     currentCategory: 1,
+    page: 0,
+    total: 0,
     loading: false,
     refreshing: false,
     finished: false,
-    categoriesLoading: false
+    categoriesLoading: false,
+    // 最近一次成功拿到数据的时间，用于「x分钟前更新」提示
+    lastUpdatedAt: null,
+    // 后端采集状态（/api/news/status），失败时为 null
+    liveStatus: null,
+    autoRefreshTimer: null
   }),
-  
+
+  getters: {
+    hasData: (state) => state.newsList.length > 0,
+    getCategoryName: (state) => (categoryId) => {
+      const category = state.categories.find(item => item.id === categoryId)
+      return category ? category.name : '未知'
+    }
+  },
+
   actions: {
     // 获取新闻分类
     async getCategories() {
-      if (this.categoriesLoading) return;
-      
-      this.categoriesLoading = true;
-      
+      if (this.categoriesLoading) return
+
+      this.categoriesLoading = true
+
       try {
-        // 调用API获取分类列表
-        const response = await axios.get(`${apiConfig.baseURL}/api/news/categories`);
-        
+        const response = await axios.get(newsConfig.categoriesEndpoint)
+
         if (response.data && response.data.code === 200) {
-          // 设置分类数据
-          this.categories = [...response.data.data, { id: 10, name: '更多' }];
-          
+          this.categories = [...response.data.data, { id: 10, name: '更多' }]
+
           // 如果没有设置当前分类，则设置为第一个分类
           if (!this.currentCategory && this.categories.length > 0) {
-            this.currentCategory = this.categories[0].id;
+            this.currentCategory = this.categories[0].id
           }
         }
       } catch (error) {
-        console.error('获取新闻分类失败:', error);
+        console.error('获取新闻分类失败:', error)
         // 设置默认分类，以防API请求失败
         this.categories = [
           { id: 1, name: '头条' },
@@ -44,204 +62,170 @@ export const useNewsStore = defineStore('news', {
           { id: 4, name: '国际' },
           { id: 5, name: '娱乐' },
           { id: 6, name: '体育' },
-          { id: 7, name: '科技' }
-        ];
+          { id: 7, name: '科技' },
+          { id: 10, name: '更多' }
+        ]
       } finally {
-        this.categoriesLoading = false;
+        this.categoriesLoading = false
       }
     },
-    
+
     // 切换新闻分类
     changeCategory(categoryId) {
+      if (this.currentCategory === categoryId) return
       this.currentCategory = categoryId
       this.newsList = []
+      this.page = 0
+      this.total = 0
       this.finished = false
-      this.getNewsList()
+      this.getNewsList(true)
     },
-    
-    // 获取新闻列表
+
+    // 获取新闻列表（分页加载）
     async getNewsList(isRefresh = false) {
       if (isRefresh) {
         this.refreshing = true
         this.newsList = []
+        this.page = 0
         this.finished = false
       }
-      
+
+      // 已经加载完就不重复请求
+      if (!isRefresh && this.finished) {
+        this.loading = false
+        return
+      }
+
       this.loading = true
-      
+
+      const nextPage = isRefresh ? 1 : this.page + 1
+
       try {
-        // 使用API请求获取新闻列表
         const params = {
           categoryId: this.currentCategory,
-          page: isRefresh ? 1 : Math.ceil(this.newsList.length / 10) + 1,
-          pageSize: 10
-        }
-        
-        // 在开发环境中，直接使用模拟数据
-        // console.log('使用模拟新闻列表数据');
-        
-        // 生成模拟数据
-        // const mockData = Array.from({ length: 10 }, (_, index) => ({
-        //   id: isRefresh ? index + 1 : this.newsList.length + index + 1,
-        //   title: `${this.getCategoryName(this.currentCategory)}新闻${isRefresh ? index + 1 : this.newsList.length + index + 1}`,
-        //   description: `这是一条关于${this.getCategoryName(this.currentCategory)}的新闻简介，包含了新闻的主要内容和亮点。`,
-        //   image: `https://picsum.photos/id/${Math.floor(Math.random() * 100)}/200/200`,
-        //   author: '新闻资讯',
-        //   publishTime: new Date().toLocaleString(),
-        //   categoryId: this.currentCategory,
-        //   views: Math.floor(Math.random() * 10000)
-        // }))
-        
-        // this.newsList = isRefresh ? mockData : [...this.newsList, ...mockData]
-        
-        // 模拟数据加载完成的逻辑
-        // if (this.newsList.length >= 30) {
-        //   this.finished = true
-        // }
-        
- 
-        // 实际项目中连接后端API的代码，暂时注释掉
-        const response = await axios.get(`${apiConfig.baseURL}/api/news/list`, { params });
-        
-        if (response.data && response.data.code === 200) {
-          const newsData = response.data.data.list;
-          
-          // 更新新闻列表
-          this.newsList = isRefresh ? newsData : [...this.newsList, ...newsData];
-          
-          // 判断是否加载完成
-          if (newsData.length < params.pageSize) {
-            this.finished = true;
-          }
+          page: nextPage,
+          pageSize: PAGE_SIZE
         }
 
+        const response = await axios.get(newsConfig.listEndpoint, { params })
+
+        if (response.data && response.data.code === 200) {
+          const payload = response.data.data || {}
+          const newsData = normalizeNewsList(payload.list || [])
+
+          // 按 id 去重，避免自动刷新和分页交叉时出现重复卡片
+          const existingIds = new Set(this.newsList.map(item => item.id))
+          const fresh = newsData.filter(item => !existingIds.has(item.id))
+
+          this.newsList = isRefresh ? newsData : [...this.newsList, ...fresh]
+          this.page = nextPage
+          this.total = payload.total || 0
+          this.lastUpdatedAt = new Date().toISOString()
+
+          // 后端会直接告诉我们还有没有更多，比按条数猜更可靠
+          if (typeof payload.has_more === 'boolean') {
+            this.finished = !payload.has_more
+          } else {
+            this.finished = newsData.length < PAGE_SIZE
+          }
+        }
       } catch (error) {
         console.error('获取新闻列表失败:', error)
+        // 请求失败时不要卡在 loading，允许用户下拉重试
+        this.finished = true
       } finally {
         this.loading = false
         this.refreshing = false
       }
     },
-    
+
     // 获取新闻详情
     async getNewsDetail(id) {
       try {
-        // 在开发环境中，使用模拟数据
-        console.log('使用模拟新闻详情数据');
-        
+        const response = await axios.get(`${newsConfig.detailEndpoint}?id=${id}`)
 
-        // 实际项目中连接后端API的代码，取消注释即可使用
-        const response = await axios.get(`${apiConfig.baseURL}/api/news/detail?id=${id}`);
-        
         if (response.data && response.data.code === 200) {
-          // 设置新闻详情数据
-          this.newsDetail = response.data.data;
-          return;
-        } else {
-          console.error('获取新闻详情失败: 接口返回错误');
-          // 接口失败时使用模拟数据作为备选
+          const detail = normalizeNews(response.data.data)
+          detail.relatedNews = normalizeNewsList(detail.relatedNews || [])
+          this.newsDetail = detail
+          return detail
         }
-
+        console.error('获取新闻详情失败: 接口返回错误')
       } catch (error) {
-        console.error('获取新闻详情失败:', error);
-        // 接口失败时使用模拟数据作为备选
-      } 
-        // 查找已有列表中的新闻
-//         const existingNews = this.newsList.find(item => item.id === Number(id))
-        
-//         if (existingNews) {
-//           this.newsDetail = {
-//             ...existingNews,
-//             content: `这是${existingNews.title}的详细内容。这是一篇关于${this.getCategoryName(existingNews.categoryId)}的新闻报道，内容丰富详实。
-            
-// 新闻事件发生在最近，引起了广泛关注。多方消息人士透露，该事件的影响将持续一段时间。
+        console.error('获取新闻详情失败:', error)
+      }
+      return null
+    },
 
-// 专家表示，此类事件的出现有其必然性，也反映了当前社会的某些问题。我们应当理性看待，并从中吸取经验教训。
+    /**
+     * 静默拉取当前分类的最新几条，把新出现的新闻插到列表最前面。
+     * 只插入不替换，所以不会打断用户的滚动位置。
+     */
+    async fetchLatest() {
+      try {
+        // 直接按当前分类取，避免"最新 10 条"全被别的频道占了
+        const response = await axios.get(newsConfig.latestEndpoint, {
+          params: { limit: PAGE_SIZE, categoryId: this.currentCategory }
+        })
+        if (response.data?.code !== 200) return 0
 
-// 接下来，相关部门将会采取措施，确保类似事件不再发生。公众也应当提高警惕，增强自我保护意识。
+        const latest = normalizeNewsList(response.data.data?.list || [])
+        this.lastUpdatedAt = new Date().toISOString()
+        if (!latest.length) return 0
 
-// 这是新闻详情的第二段落，提供了更多背景信息和细节描述。
+        const existingIds = new Set(this.newsList.map(item => item.id))
+        const incoming = latest.filter(item => !existingIds.has(item.id))
+        if (!incoming.length) return 0
 
-// 这是新闻详情的第三段落，包含了各方观点和评论。
-
-// 这是新闻详情的最后一段，总结了事件的影响和未来展望。`,
-//             relatedNews: Array.from({ length: 3 }, (_, i) => ({
-//               id: 1000 + i,
-//               title: `相关${this.getCategoryName(existingNews.categoryId)}新闻${i + 1}`,
-//               image: `https://picsum.photos/id/${Math.floor(Math.random() * 100)}/200/200`
-//             }))
-//           }
-//         } else {
-//           // 如果列表中没有，则生成一个新的详情
-//           const categoryId = this.currentCategory
-//           this.newsDetail = {
-//             id: Number(id),
-//             title: `${this.getCategoryName(categoryId)}新闻${id}`,
-//             description: `这是一条关于${this.getCategoryName(categoryId)}的新闻简介，包含了新闻的主要内容和亮点。`,
-//             image: `https://picsum.photos/id/${Math.floor(Math.random() * 100)}/200/200`,
-//             author: '新闻资讯',
-//             publishTime: new Date().toLocaleString(),
-//             categoryId: categoryId,
-//             views: Math.floor(Math.random() * 10000),
-//             content: `这是${this.getCategoryName(categoryId)}新闻${id}的详细内容。这是一篇关于${this.getCategoryName(categoryId)}的新闻报道，内容丰富详实。
-            
-// 新闻事件发生在最近，引起了广泛关注。多方消息人士透露，该事件的影响将持续一段时间。
-
-// 专家表示，此类事件的出现有其必然性，也反映了当前社会的某些问题。我们应当理性看待，并从中吸取经验教训。
-
-// 接下来，相关部门将会采取措施，确保类似事件不再发生。公众也应当提高警惕，增强自我保护意识。
-
-// 这是新闻详情的第二段落，提供了更多背景信息和细节描述。
-
-// 这是新闻详情的第三段落，包含了各方观点和评论。
-
-// 这是新闻详情的最后一段，总结了事件的影响和未来展望。`,
-//             relatedNews: Array.from({ length: 3 }, (_, i) => ({
-//               id: 1000 + i,
-//               title: `相关${this.getCategoryName(categoryId)}新闻${i + 1}`,
-//               image: `https://picsum.photos/id/${Math.floor(Math.random() * 100)}/200/200`
-//             }))
-//           }
-//         }
-//             content: `这是${this.getCategoryName(categoryId)}新闻${id}的详细内容。这是一篇关于${this.getCategoryName(categoryId)}的新闻报道，内容丰富详实。
-            
-// 新闻事件发生在最近，引起了广泛关注。多方消息人士透露，该事件的影响将持续一段时间。
-
-// 专家表示，此类事件的出现有其必然性，也反映了当前社会的某些问题。我们应当理性看待，并从中吸取经验教训。
-
-// 接下来，相关部门将会采取措施，确保类似事件不再发生。公众也应当提高警惕，增强自我保护意识。
-
-// 这是新闻详情的第二段落，提供了更多背景信息和细节描述。
-
-// 这是新闻详情的第三段落，包含了各方观点和评论。
-
-// 这是新闻详情的最后一段，总结了事件的影响和未来展望。`,
-//             relatedNews: Array.from({ length: 3 }, (_, i) => ({
-//               id: 1000 + i,
-//               title: `相关${this.getCategoryName(categoryId)}新闻${i + 1}`,
-//               image: `https://picsum.photos/id/${Math.floor(Math.random() * 100)}/200/200`
-//             }))
-//           }
-//         }
-//       } catch (error) {
-//         console.error('获取新闻详情失败:', error)
-//       }
-//     },
-},
-    // 切换新闻分类
-    changeCategory(categoryId) {
-      if (this.currentCategory !== categoryId) {
-        this.currentCategory = categoryId
-        this.newsList = []
-        this.finished = false
-        this.getNewsList(true)
+        this.newsList = [...incoming, ...this.newsList]
+        this.total += incoming.length
+        return incoming.length
+      } catch (error) {
+        console.error('获取最新新闻失败:', error)
+        return 0
       }
     },
-    
-    // 获取分类名称
-    getCategoryName(categoryId) {
-      const category = this.categories.find(item => item.id === categoryId)
-      return category ? category.name : '未知'
+
+    // 拉取后端采集状态，首页用来显示「实时更新中」
+    async fetchLiveStatus() {
+      try {
+        const response = await axios.get(newsConfig.statusEndpoint)
+        if (response.data?.code === 200) {
+          this.liveStatus = response.data.data
+        }
+      } catch (error) {
+        // 状态接口不可用不影响新闻浏览，静默失败
+        this.liveStatus = null
+      }
+    },
+
+    // 手动触发后端抓取（下拉刷新时如果数据太旧会调用）
+    async triggerRefresh() {
+      try {
+        const response = await axios.post(newsConfig.refreshEndpoint, null, {
+          params: { wait: false }
+        })
+        return response.data?.code === 200
+      } catch (error) {
+        console.error('触发新闻刷新失败:', error)
+        return false
+      }
+    },
+
+    startAutoRefresh() {
+      this.stopAutoRefresh()
+      this.autoRefreshTimer = setInterval(() => {
+        // 页面不可见时不打扰后端
+        if (typeof document !== 'undefined' && document.hidden) return
+        this.fetchLatest()
+      }, AUTO_REFRESH_MS)
+    },
+
+    stopAutoRefresh() {
+      if (this.autoRefreshTimer) {
+        clearInterval(this.autoRefreshTimer)
+        this.autoRefreshTimer = null
+      }
     }
   }
 })

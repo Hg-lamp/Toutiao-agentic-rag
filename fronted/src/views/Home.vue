@@ -1,6 +1,12 @@
 <template>
   <div class="home">
-    <van-nav-bar :title="$t('home.title')" fixed />
+    <van-nav-bar :title="$t('home.title')" fixed>
+      <template #right>
+        <span class="live-hint" v-if="freshnessText" @click="onPullLatest">
+          <i class="live-dot"></i>{{ freshnessText }}
+        </span>
+      </template>
+    </van-nav-bar>
 
     <div class="more-options">
       <div class="more-tab" @click="goToCategory">
@@ -43,8 +49,10 @@ import { ref, onMounted, watch, computed, onBeforeUnmount } from 'vue'
 import { useNewsStore } from '../store/modules/news'
 import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import { showToast } from 'vant'
 import NewsItem from '../components/NewsItem.vue'
 import TabBar from '../components/TabBar.vue'
+import { formatRelativeTime } from '../utils/news'
 
 const newsStore = useNewsStore()
 const router = useRouter()
@@ -52,6 +60,22 @@ const route = useRoute()
 const { t } = useI18n()
 const activeTab = ref(0)
 const tabsTop = ref(0)
+// 每分钟重算一次「x分钟前更新」，否则时间提示会停在进页面那一刻
+const now = ref(Date.now())
+let clockTimer = null
+
+const freshnessText = computed(() => {
+  if (!newsStore.lastUpdatedAt) return ''
+  return `${formatRelativeTime(newsStore.lastUpdatedAt, now.value)}更新`
+})
+
+// 点一下顶部提示 = 立刻拉最新
+const onPullLatest = async () => {
+  const added = await newsStore.fetchLatest()
+  now.value = Date.now()
+  if (added > 0) showToast({ message: `已更新 ${added} 条新新闻`, position: 'bottom' })
+  else showToast({ message: '已经是最新了', position: 'bottom' })
+}
 
 watch(
   () => route.query.categoryId,
@@ -73,6 +97,10 @@ onMounted(() => {
   newsStore.getCategories().then(() => {
     newsStore.getNewsList()
   })
+  // 实时新闻：进页面拉一次状态，并开启定时静默刷新
+  newsStore.fetchLiveStatus()
+  newsStore.startAutoRefresh()
+  clockTimer = setInterval(() => { now.value = Date.now() }, 60 * 1000)
   setTimeout(updateTabsPosition, 300)
   window.addEventListener('scroll', handleScroll)
 })
@@ -108,6 +136,8 @@ const handleScroll = () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('scroll', handleScroll)
+  newsStore.stopAutoRefresh()
+  if (clockTimer) clearInterval(clockTimer)
 })
 
 watch(activeTab, (newVal) => {
@@ -176,5 +206,28 @@ const onLoad = () => { newsStore.getNewsList() }
   height: 100%;
   padding: 0 12px;
   font-size: 13px;
+}
+
+/* 顶部「x分钟前更新」提示 + 呼吸小圆点 */
+.live-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding-right: 4px;
+}
+
+.live-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent-pink);
+  animation: livePulse 1.8s var(--ease-smooth) infinite;
+}
+
+@keyframes livePulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.75); }
 }
 </style>
