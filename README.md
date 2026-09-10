@@ -3,10 +3,17 @@
 **FastAPI + LangGraph + LangChain** 构建的 Agentic RAG 新闻资讯 AI 平台。
 
 > 项目需求与验收标准见 [REQUIREMENTS.md](REQUIREMENTS.md)。
+> 实时新闻采集的完整方案见 [docs/NEWS_REALTIME.md](docs/NEWS_REALTIME.md)。
 
 ## 功能特性
 
 - **新闻浏览** — 分类、列表、详情
+- **实时新闻** — 后台自动采集当日新闻，无需人工灌数据
+  - 21 个实测可用的新闻源（央视新闻、中新网、IT之家、华尔街见闻等）
+  - 启动即抓 + 每 30 分钟增量更新 + 每天 07:00 全量刷新
+  - URL 指纹去重、标题指纹跨来源去重、超期新闻自动过滤与清理
+  - 自动归类到原有 9 个频道，并补全正文、封面图、来源与原文链接
+  - 列表按发布时间倒序，前端显示「刚刚 / 12分钟前」相对时间与「实时」角标
 - **用户系统** — 注册、登录、个人信息、头像上传
 - **收藏/历史记录** — 收藏新闻、浏览历史
 - **AI Agentic RAG 聊天** — 基于 LangGraph 的智能问答系统
@@ -35,6 +42,7 @@
 | ORM | SQLAlchemy 2.0 | 异步 ORM |
 | 迁移 | Alembic | 数据库版本管理 |
 | 搜索引擎 | SearXNG | 互联网搜索 |
+| 新闻采集 | httpx + 标准库 xml/html 解析 | 实时新闻抓取（无额外依赖） |
 | 前端 | Vue.js (Vant UI) | 移动端 Web 界面 |
 
 ## 环境要求
@@ -65,11 +73,15 @@ pip install -r requirements.txt
 #    Redis: localhost:6379（缓存）+ localhost:6380（向量）
 #    PostgreSQL: postgres:postgres@localhost:5432/langgraph_db
 
-# 5. 执行数据库迁移
+# 5. 执行数据库迁移（实时新闻需要这一步新增字段，必须先执行）
 alembic upgrade head
 
 # 6. 启动服务
 uvicorn backend.main:app --reload --host localhost --port 8000
+
+# 启动后无需其它操作：后台会自动开始抓取当日新闻，
+# 日志里会看到 [news] 开头的采集记录。想立刻确认可以去：
+#   curl http://localhost:8000/api/news/status
 ```
 
 ### Docker 部署
@@ -165,6 +177,7 @@ Toutiao_course/
 │   │   ├── agent_graph.py  # 主图（父图）
 │   │   └── child_graph.py  # 子图
 │   ├── cache/              # Redis 缓存
+│   │   └── news_cache.py   # 新闻缓存 + 采集后失效
 │   ├── config/             # 配置文件
 │   │   ├── llm_config.py   # LLM 配置
 │   │   ├── mysql_config.py # MySQL 数据库配置
@@ -173,23 +186,32 @@ Toutiao_course/
 │   │   ├── redis_vector.py # 向量存储配置
 │   │   ├── graph_config.py # LangGraph 配置
 │   │   ├── cache_config.py # Redis 缓存配置
+│   │   ├── news_config.py  # 实时新闻配置
 │   │   └── search_engine.py # SearXNG 搜索配置
 │   ├── crud/               # 数据库 CRUD
 │   ├── models/             # SQLAlchemy 模型
 │   ├── routers/            # API 路由
 │   │   ├── ai_chat.py      # AI 聊天、文件与会话
-│   │   ├── news.py         # 新闻
+│   │   ├── news.py         # 新闻（含实时采集的 status/refresh/sources）
 │   │   ├── users.py        # 用户
 │   │   ├── favorite.py     # 收藏
 │   │   └── history.py      # 历史
 │   ├── schemas/            # Pydantic 模型
 │   ├── services/           # 业务服务
 │   │   ├── rag.py          # RAG 检索
-│   │   └── tools.py        # 工具定义与执行
+│   │   ├── tools.py        # 工具定义与执行
+│   │   ├── news_sources.py     # 实时新闻来源清单
+│   │   ├── news_fetcher.py     # 多源抓取与解析
+│   │   ├── news_classifier.py  # 频道归类
+│   │   ├── news_pipeline.py    # 去重入库流水线
+│   │   └── news_scheduler.py   # 定时调度
 │   └── utils/              # 工具函数
+│       └── html_text.py    # 零依赖 HTML 正文提取
 ├── alembic/                # 数据库迁移
+├── docs/                   # 实时新闻等专题文档
 ├── searxng/                # SearXNG 配置
 ├── fronted/                # Vue.js 前端
+│   └── src/utils/news.js   # 新闻字段归一化与时间格式化
 ├── docker-compose.yml      # Docker 编排
 ├── Dockerfile              # 镜像构建
 └── requirements.txt        # Python 依赖
@@ -200,8 +222,12 @@ Toutiao_course/
 | 模块 | 端点 | 说明 |
 |---|---|---|
 | 新闻 | `GET /api/news/categories` | 获取分类列表 |
-| 新闻 | `GET /api/news/list` | 获取新闻列表（分页） |
+| 新闻 | `GET /api/news/list` | 获取新闻列表（分页，按发布时间倒序） |
+| 新闻 | `GET /api/news/latest` | 获取最新新闻（首屏「实时」） |
 | 新闻 | `GET /api/news/detail` | 获取新闻详情 |
+| 新闻 | `GET /api/news/status` | 实时采集运行状态（最近更新时间、各频道条数） |
+| 新闻 | `POST /api/news/refresh` | 手动触发一次实时抓取 |
+| 新闻 | `GET /api/news/sources` | 当前启用的新闻来源清单 |
 | 用户 | `POST /api/user/register` | 注册 |
 | 用户 | `POST /api/user/login` | 登录 |
 | 用户 | `GET /api/user/info` | 获取用户信息 |
@@ -239,12 +265,21 @@ Toutiao_course/
 | `OLLAMA_BASE_URL` | Ollama 服务地址 | `http://localhost:11434` |
 | `SEARXNG_HOST` | SearXNG 搜索引擎地址 | `http://localhost:8080` |
 | `SEARXNG_SECRET_KEY` | SearXNG 密钥 | 可选 |
+| `NEWS_REALTIME_ENABLED` | 实时新闻总开关 | `true` |
+| `NEWS_REFRESH_INTERVAL_MINUTES` | 增量刷新间隔（分钟） | `30` |
+| `NEWS_DAILY_REFRESH_HOUR` | 每日全量刷新时刻 | `7` |
+| `NEWS_MAX_AGE_HOURS` | 只收录最近 N 小时的新闻 | `72` |
+| `NEWS_RETENTION_DAYS` | 采集数据保留天数 | `30` |
+| `NEWS_REFRESH_TOKEN` | 手动触发采集的令牌 | 可选 |
+
+> 完整配置项（正文补全、并发、代理、来源开关等）见
+> [docs/NEWS_REALTIME.md](docs/NEWS_REALTIME.md#五配置项)。
 
 ## 数据库架构
 
 ### MySQL（业务数据）
 - `user` — 用户表
-- `news` — 新闻表
+- `news` — 新闻表（含 `source` / `source_url` / `url_hash` / `is_live` / `fetched_at` 实时采集字段）
 - `favorite` — 收藏表
 - `history` — 浏览历史表
 - `conversations` — AI 会话元信息表
@@ -276,6 +311,7 @@ Toutiao_course/
 
 - [x] 用户注册/登录
 - [x] 新闻 CRUD
+- [x] **实时新闻自动采集（多源聚合 + 定时更新 + 去重 + 自动归类）**
 - [x] 收藏 / 历史记录
 - [x] Agentic RAG 智能体
 - [x] 异步高并发（async/await + ainvoke）

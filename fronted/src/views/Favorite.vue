@@ -9,7 +9,7 @@
               <div class="item-image" v-if="item.image"><img :src="item.image" :alt="item.title" loading="lazy" /></div>
               <div class="item-info">
                 <div class="item-title">{{ item.title }}</div>
-                <div class="item-meta"><span>{{ item.author }}</span><span class="dot">·</span><span>{{ item.publishTime }}</span></div>
+                <div class="item-meta"><span>{{ item.source || item.author }}</span><span class="dot">·</span><span>{{ formatRelativeTime(item.publishTime) }}</span></div>
                 <div class="item-time">收藏于 {{ item.favoriteTime }}</div>
               </div>
             </div>
@@ -22,7 +22,7 @@
   </div>
 </template>
 <script setup>
-import { onMounted } from 'vue'; import { useRouter } from 'vue-router'; import { useFavoriteStore } from '../store/modules/favorite'; import { showDialog } from 'vant';
+import { onMounted } from 'vue'; import { useRouter } from 'vue-router'; import { useFavoriteStore } from '../store/modules/favorite'; import { showDialog } from 'vant'; import { formatRelativeTime } from '../utils/news';
 const router = useRouter(); const favoriteStore = useFavoriteStore();
 const onClickLeft = () => router.back();
 const goToNewsDetail = (id) => router.push(`/news/detail/${id}`);

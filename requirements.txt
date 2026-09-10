@@ -24,6 +24,10 @@ langchain-deepseek==1.1.0
 langchain-ollama==1.1.0
 langchain-redis==0.2.5
 langgraph==1.0.7
+# langgraph-prebuilt 必须钉住：>=1.0.8 会从 langgraph.runtime 导入 ExecutionInfo，
+# 而 langgraph 1.0.7 没有这个符号，全新 pip install 后 `from langgraph.prebuilt import ToolNode`
+# 会直接 ImportError，整个后端起不来。
+langgraph-prebuilt==1.0.7
 langgraph-checkpoint-postgres==3.1.2
 
 # Redis, retrieval and search

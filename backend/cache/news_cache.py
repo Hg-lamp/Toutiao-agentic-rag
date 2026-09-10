@@ -2,7 +2,7 @@
 #key value
 from typing import List, Dict, Any, Optional
 
-from backend.config.cache_config import get_json_cache, set_cache
+from backend.config.cache_config import delete_cache_by_prefix, get_json_cache, set_cache
 
 CATEGORIES_KEY='news:categories'
 NEWS_LIST_PREFIX='news:list'
@@ -28,3 +28,9 @@ async def get_cache_news_list(category_id:Optional[int],page:int,size:int):
     category_part = category_id if category_id is not None else "all"
     key=f"{NEWS_LIST_PREFIX}:{category_part}:{page}:{size}"
     return await get_json_cache(key)
+
+
+#实时新闻入库后必须让列表缓存失效，否则前端下拉刷新还是拿到旧数据
+async def invalidate_news_list_cache():
+    deleted = await delete_cache_by_prefix(f"{NEWS_LIST_PREFIX}:")
+    return deleted

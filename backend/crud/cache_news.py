@@ -14,7 +14,7 @@ async def get_categories(db:AsyncSession,skip:int=0,limit:int=100):
     if cached_categories:
         return cached_categories
 
-    stmt = select(Category).offset(skip).limit(limit)
+    stmt = select(Category).order_by(Category.sort_order,Category.id).offset(skip).limit(limit)
     result = await db.execute(stmt)
     categories =  result.scalars().all()
     #写入缓存
@@ -32,7 +32,13 @@ async def get_news_list(db:AsyncSession,category_id:int=0,limit:int=10,skip:int=
     #查询指定分类下的所有新闻
     if cached_list:
         return [News(**item) for item in cached_list]
-    stmt= select(News).where(News.category_id==category_id).offset(skip).limit(limit)
+    # 必须按发布时间倒序：没有 ORDER BY 时数据库返回的是插入顺序，
+    # 老数据会一直排在前面，用户看到的就是「很久以前的新闻」。
+    stmt=(select(News).
+          where(News.category_id==category_id).
+          order_by(News.publish_time.desc(),News.id.desc()).
+          offset(skip).
+          limit(limit))
     result=await db.execute(stmt)
     news_list= result.scalars().all()
     if news_list:
@@ -68,18 +74,18 @@ async def increase_news_views(db:AsyncSession,news_id:int):
 #获取新闻页的同类新闻
 async def get_related_news(db:AsyncSession,news_id:int,category_id:int):
     stmt=(select(News).
-          where(News.id!=news_id and News.category_id==category_id).
-          order_by(News.views.desc()).
+          where(News.id!=news_id,News.category_id==category_id).
+          order_by(News.publish_time.desc(),News.id.desc()).
           limit(5))
     result = await db.execute(stmt)
     related_news = result.scalars().all()
     return[
         {"id":news_detail.id,
             "title":news_detail.title,
-            "content":news_detail.content,
             "image":news_detail.image,
             "author":news_detail.author,
             "publish_time":news_detail.publish_time,
             "category_id":news_detail.category_id,
             "views":news_detail.views,
+            "source":news_detail.source,
          } for news_detail in related_news]

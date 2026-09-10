@@ -4,14 +4,24 @@ from backend.models.news import Category, News
 
 
 async def get_categories(db:AsyncSession,skip:int=0,limit:int=100):
-    stmt = select(Category).offset(skip).limit(limit)
+    stmt = select(Category).order_by(Category.sort_order,Category.id).offset(skip).limit(limit)
     result = await db.execute(stmt)
     return result.scalars().all()
 
 
+async def get_category_map(db:AsyncSession):
+    """返回 {分类id: 分类名}，用于列表项直接带上分类名。"""
+    result = await db.execute(select(Category.id, Category.name))
+    return {row[0]: row[1] for row in result.all()}
+
 
 async def get_news_list(db:AsyncSession,category_id:int=0,limit:int=10,skip:int=0):
-    stmt= select(News).where(News.category_id==category_id).offset(skip).limit(limit)
+    #按发布时间倒序，保证列表第一条永远是最新的
+    stmt=(select(News).
+          where(News.category_id==category_id).
+          order_by(News.publish_time.desc(),News.id.desc()).
+          offset(skip).
+          limit(limit))
     result=await db.execute(stmt)
     return result.scalars().all()
 
@@ -36,21 +46,31 @@ async def increase_news_views(db:AsyncSession,news_id:int):
     return res.rowcount >0
 
 
-#获取新闻页的同类新闻
+#获取新闻页的同类新闻：优先给最新的，保证推荐位也是新鲜的
 async def get_related_news(db:AsyncSession,news_id:int,category_id:int):
     stmt=(select(News).
-          where(News.id!=news_id and News.category_id==category_id).
-          order_by(News.views.desc()).
+          where(News.id!=news_id,News.category_id==category_id).
+          order_by(News.publish_time.desc(),News.id.desc()).
           limit(5))
     result = await db.execute(stmt)
     related_news = result.scalars().all()
     return[
         {"id":news_detail.id,
             "title":news_detail.title,
-            "content":news_detail.content,
             "image":news_detail.image,
             "author":news_detail.author,
             "publish_time":news_detail.publish_time,
             "category_id":news_detail.category_id,
             "views":news_detail.views,
+            "source":news_detail.source,
          } for news_detail in related_news]
+
+
+#实时新闻相关：按发布时间倒序取最新 N 条，供首页「最新」与状态接口使用
+async def get_latest_news(db:AsyncSession,limit:int=10,category_id:int=0):
+    stmt=select(News)
+    if category_id:
+        stmt=stmt.where(News.category_id==category_id)
+    stmt=stmt.order_by(News.publish_time.desc(),News.id.desc()).limit(limit)
+    result = await db.execute(stmt)
+    return result.scalars().all()
