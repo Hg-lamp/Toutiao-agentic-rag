@@ -1,7 +1,7 @@
 <template>
   <div class="my-container">
     <van-nav-bar :title="$t('my.title')" />
-    <div class="user-info" @click="goToProfile" v-if="isLogin">
+    <div class="user-info" @click="goToProfile" v-if="isLogin && sessionVerified">
       <div class="avatar">
         <van-image round width="72" height="72"
           :src="userInfo?.avatar || 'https://fastly.jsdelivr.net/npm/@vant/assets/cat.jpeg'" />
@@ -15,7 +15,7 @@
     <div class="user-info" v-else>
       <div class="avatar">
         <van-image round width="72" height="72"
-          :src="userInfo?.avatar || 'https://fastly.jsdelivr.net/npm/@vant/assets/cat.jpeg'" />
+          src="https://fastly.jsdelivr.net/npm/@vant/assets/cat.jpeg" />
       </div>
       <div class="info">
         <div class="username">{{ $t('my.notLoggedIn') }}</div>
@@ -40,7 +40,7 @@
 </template>
 
 <script setup>
-import { onMounted } from 'vue';
+import { onActivated, ref } from 'vue';
 import { useUserStore } from '../store/user';
 import { useRouter } from 'vue-router';
 import { computed } from 'vue';
@@ -54,6 +54,7 @@ const { t } = useI18n();
 
 const userInfo = computed(() => userStore.userInfo);
 const isLogin = computed(() => userStore.getLoginStatus);
+const sessionVerified = ref(false);
 
 const goToLogin = () => router.push('/login');
 const goToRegister = () => router.push('/register');
@@ -68,7 +69,20 @@ const handleLogout = () => {
     .then((action) => { if (action === 'confirm') { userStore.logout(); router.push('/login') } });
 };
 
-onMounted(async () => { try { await userStore.getUserInfoDetail() } catch (e) { console.error(e) } });
+onActivated(async () => {
+  if (!userStore.getLoginStatus || !userStore.token) {
+    sessionVerified.value = false;
+    return;
+  }
+
+  try {
+    const result = await userStore.getUserInfoDetail();
+    sessionVerified.value = result.success;
+  } catch (e) {
+    sessionVerified.value = false;
+    console.error(e);
+  }
+});
 </script>
 
 <style scoped>

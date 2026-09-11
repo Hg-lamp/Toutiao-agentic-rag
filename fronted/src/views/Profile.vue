@@ -1,7 +1,7 @@
 <template>
   <div class="profile-page">
     <van-nav-bar title="个人信息" left-arrow @click-left="$router.back()" fixed />
-    <div class="profile-container">
+    <div v-if="profileReady && userInfo" class="profile-container">
       <van-cell-group inset class="avatar-group">
         <van-cell title="头像" center is-link @click="selectAvatar">
           <template #right-icon><van-image round width="56" height="56" :src="userInfo.avatar || 'https://fastly.jsdelivr.net/npm/@vant/assets/cat.jpeg'" /></template>
@@ -23,10 +23,16 @@
 </template>
 <script setup>
 import { ref, computed, h, onMounted } from 'vue'; import { useUserStore } from '../store/user'; import { showDialog, showToast, showLoadingToast, showSuccessToast, showFailToast } from 'vant'; import { useRouter } from 'vue-router';
-const router = useRouter(); const userStore = useUserStore(); const fileInputRef = ref(null);
+const router = useRouter(); const userStore = useUserStore(); const fileInputRef = ref(null); const profileReady = ref(false);
 onMounted(async () => {
   if (!userStore.getLoginStatus) { router.push('/login'); return }
-  try { const l = showLoadingToast({ message: '加载中...', forbidClick: true, duration: 0 }); const r = await userStore.getUserInfoDetail(); l.close(); if (!r.success) showFailToast(r.message || '获取用户信息失败') }
+  try {
+    const l = showLoadingToast({ message: '加载中...', forbidClick: true, duration: 0 });
+    const r = await userStore.getUserInfoDetail();
+    l.close();
+    if (r.success) profileReady.value = true;
+    else if (!r.unauthorized) showFailToast(r.message || '获取用户信息失败');
+  }
   catch (e) { showToast.clear(); showToast.fail('获取用户信息失败') }
 });
 const userInfo = computed(() => userStore.userInfo);

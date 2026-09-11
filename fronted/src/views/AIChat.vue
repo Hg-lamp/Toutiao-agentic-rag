@@ -46,10 +46,20 @@
               <div class="image-caption">{{ msg.name }} · 点击移除</div>
             </div>
           </div>
-          <div v-else-if="msg.role === 'file'" class="msg file" @click="removeFileMsg(index)">
+          <div v-else-if="msg.role === 'file'" class="msg file" @click="openFilePreview(msg)">
             <div class="msg-label">你</div>
-            <div class="msg-bubble">
-              📄 {{ msg.name }}（{{ formatSize(msg.size) }}）
+            <div class="msg-bubble file-bubble">
+              <van-icon name="description" class="file-icon" />
+              <div class="file-info">
+                <div class="file-name">{{ msg.name }}</div>
+                <div class="file-meta">{{ formatSize(msg.size) }} · {{ msg.sent ? '已发送，点击查看内容' : '待发送，点击查看内容' }}</div>
+              </div>
+              <van-icon
+                v-if="!msg.sent"
+                name="cross"
+                class="file-remove"
+                @click.stop="removeFileMsg(index)"
+              />
             </div>
           </div>
           <div v-else :class="['msg', msg.role === 'user' ? 'user' : 'ai']">
@@ -71,13 +81,28 @@
               </div>
               <!-- 正文 -->
               <div v-if="msg.role === 'assistant' && msg.content === '' && (!msg.traces || !msg.traces.length)" class="typing"><span></span><span></span><span></span></div>
-              <div v-else v-html="formatMessage(msg.content)"></div>
+              <div
+                v-else
+                class="msg-text"
+                :class="{ 'is-collapsed': isMessageCollapsed(msg) }"
+                v-html="formatMessage(msg.content)"
+              ></div>
               <div
                 v-for="(chart, chartIndex) in (msg.charts || [])"
                 :key="chartIndex"
                 class="chart-container"
+                :data-chart-key="chartKey(index, chartIndex)"
                 :ref="(el) => setChartRef(el, index, chartIndex)"
               ></div>
+              <button
+                v-if="canCollapseMessage(msg)"
+                type="button"
+                class="message-collapse-btn"
+                @click.stop="toggleMessageCollapse(msg)"
+              >
+                <van-icon :name="isMessageCollapsed(msg) ? 'arrow-down' : 'arrow-up'" />
+                {{ isMessageCollapsed(msg) ? '展开完整消息' : '收起长消息' }}
+              </button>
             </div>
             <van-button
               v-if="msg.role === 'assistant' && index === messages.length - 1 && msg.status === 'generating'"
@@ -106,35 +131,103 @@
         </div>
         <div class="input-row">
           <van-field v-model="userInput" rows="1" autosize type="textarea" placeholder="请输入问题..." class="chat-input" @keypress.enter.prevent="sendMessage" />
-          <van-button type="primary" class="send-btn" :disabled="isLoading || (!userInput.trim() && !hasPendingImage)" @click="sendMessage">发送</van-button>
+          <van-button type="primary" class="send-btn" :disabled="isLoading || (!userInput.trim() && !hasPendingImage && !hasPendingFile)" @click="sendMessage">发送</van-button>
         </div>
       </div>
     </div>
+
+    <van-popup
+      v-model:show="filePreviewVisible"
+      position="bottom"
+      round
+      :style="{ height: '72%' }"
+      class="file-preview-popup"
+    >
+      <div class="file-preview">
+        <div class="file-preview-header">
+          <div class="file-preview-heading">
+            <div class="file-preview-title">{{ filePreview?.name || '文件内容' }}</div>
+            <div class="file-preview-meta">{{ filePreview ? formatSize(filePreview.size) : '' }}</div>
+          </div>
+          <van-icon name="cross" class="file-preview-close" @click="closeFilePreview" />
+        </div>
+        <pre class="file-preview-content">{{ filePreview?.text || '文件内容为空' }}</pre>
+        <div v-if="filePreview && !filePreview.sent" class="file-preview-footer">
+          <van-button type="danger" block @click="removePreviewFile">移除文件</van-button>
+        </div>
+      </div>
+    </van-popup>
     <tab-bar />
   </div>
 </template>
 <script setup>
 import { showDialog, showImagePreview } from 'vant';
-import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'; import TabBar from '../components/TabBar.vue'; import * as marked from 'marked'; import DOMPurify from 'dompurify'; import * as echarts from 'echarts'; import { aiChatConfig } from '../config/api'; import { useChatStore } from '../store/modules/chat'; import { useUserStore } from '../store/user';
+import { ref, computed, onMounted, onActivated, onBeforeUnmount, nextTick, watch } from 'vue'; import TabBar from '../components/TabBar.vue'; import * as marked from 'marked'; import DOMPurify from 'dompurify'; import * as echarts from 'echarts'; import { aiChatConfig } from '../config/api'; import { useChatStore } from '../store/modules/chat'; import { useUserStore } from '../store/user';
+import { handleUnauthorizedResponse } from '../utils/auth';
 const messages = ref([{ role: 'assistant', content: '你好，我是鼠鼠小助手，有什么需要我帮忙的吗？' }]);
 const userInput = ref(''); const messagesContainer = ref(null); const isLoading = ref(false);
 const activeRequest = ref(null);
+const filePreviewVisible = ref(false);
+const filePreview = ref(null);
 const isUploading = ref(false); const fileInput = ref(null);
 const isImageUploading = ref(false); const imageInput = ref(null);
 const isRagUploading = ref(false); const ragFileInput = ref(null);
 const chatStore = useChatStore(); const userStore = useUserStore(); const sidebarVisible = ref(false);
 const chartInstances = new Map();
 const chartKey = (messageIndex, chartIndex) => `${messageIndex}-${chartIndex}`;
-const setChartRef = (el, messageIndex, chartIndex) => {
-  if (!el) return;
+const disposeCharts = () => {
+  chartInstances.forEach((chart) => chart.dispose());
+  chartInstances.clear();
+};
+const renderChart = (el, messageIndex, chartIndex) => {
   const chart = messages.value[messageIndex]?.charts?.[chartIndex];
-  if (!chart) return;
+  if (!el?.isConnected || !chart || el.clientWidth === 0 || el.clientHeight === 0) return false;
   const key = chartKey(messageIndex, chartIndex);
   const instance = echarts.getInstanceByDom(el) || echarts.init(el);
   instance.setOption(chart.option, true);
+  instance.resize();
   chartInstances.set(key, instance);
+  return true;
 };
+const setChartRef = (el, messageIndex, chartIndex) => {
+  if (!el) return;
+  requestAnimationFrame(() => {
+    if (!renderChart(el, messageIndex, chartIndex)) {
+      requestAnimationFrame(() => renderChart(el, messageIndex, chartIndex));
+    }
+  });
+};
+const renderAllCharts = () => {
+  nextTick(() => {
+    requestAnimationFrame(() => {
+      if (!messagesContainer.value) return;
+      messagesContainer.value.querySelectorAll('.chart-container[data-chart-key]').forEach((el) => {
+        const [messageIndex, chartIndex] = el.dataset.chartKey.split('-').map(Number);
+        renderChart(el, messageIndex, chartIndex);
+      });
+    });
+  });
+};
+const LONG_MESSAGE_CHAR_LIMIT = 420;
+const LONG_MESSAGE_LINE_LIMIT = 12;
 const formatMessage = (c) => c ? DOMPurify.sanitize(marked.parse(c)) : '';
+const isLongMessage = (message) => {
+  const content = message?.content || '';
+  return content.length > LONG_MESSAGE_CHAR_LIMIT
+    || content.split('\n').length > LONG_MESSAGE_LINE_LIMIT;
+};
+const canCollapseMessage = (message) => (
+  isLongMessage(message)
+  && message.status !== 'generating'
+  && message.status !== 'pending'
+);
+const isMessageCollapsed = (message) => (
+  canCollapseMessage(message) && (message.collapsed ?? true)
+);
+const toggleMessageCollapse = (message) => {
+  message.collapsed = !isMessageCollapsed(message);
+  renderAllCharts();
+};
 const handleMessageClick = (event) => {
   const image = event.target;
   if (!(image instanceof HTMLImageElement)) return;
@@ -147,9 +240,32 @@ const handleMessageClick = (event) => {
     loop: false,
   });
 };
+const parseStoredFileMessages = (content) => {
+  const source = content || '';
+  const matches = [...source.matchAll(/用户上传了文件 ([\s\S]+?)，内容如下：\n```\n([\s\S]*?)\n```(?=\n\n|$)/g)];
+  if (!matches.length) return null;
+
+  const files = matches.map((match) => {
+    const text = match[2];
+    return {
+      role: 'file',
+      name: match[1].trim(),
+      text,
+      size: new TextEncoder().encode(text).length,
+      sent: true,
+    };
+  });
+  const lastMatch = matches[matches.length - 1];
+  return {
+    files,
+    question: source.slice(lastMatch.index + lastMatch[0].length).replace(/^\n+/, '').trim(),
+  };
+};
 const parseStoredMessage = (content) => {
   const charts = [];
-  const cleanContent = (content || '').replace(/<!-- AI_CHART:(.*?) -->/gs, (_, raw) => {
+  const parsedFiles = parseStoredFileMessages(content);
+  const visibleContent = parsedFiles ? parsedFiles.question : content;
+  const cleanContent = (visibleContent || '').replace(/<!-- AI_CHART:(.*?) -->/gs, (_, raw) => {
     try {
       const payload = JSON.parse(raw);
       if (payload?.type === 'chart' && payload.option) charts.push(payload);
@@ -158,10 +274,14 @@ const parseStoredMessage = (content) => {
     }
     return '';
   }).trim();
-  return { content: cleanContent, charts };
+  return { content: cleanContent, charts, files: parsedFiles?.files || [] };
 };
+const buildFileContext = (file) => (
+  `用户上传了文件 ${file.name}，内容如下：\n\`\`\`\n${file.text}\n\`\`\`\n\n`
+);
 const formatSize = (bytes) => { if (bytes < 1024) return bytes + 'B'; if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + 'KB'; return (bytes / 1024 / 1024).toFixed(1) + 'MB'; };
 const hasPendingImage = computed(() => messages.value.some((msg) => msg.role === 'image'));
+const hasPendingFile = computed(() => messages.value.some((msg) => msg.role === 'file' && !msg.sent));
 const scrollToBottom = () => { if (messagesContainer.value) messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight };
 const triggerUpload = () => { if (!isUploading.value) fileInput.value.click() };
 const triggerImageUpload = () => { if (!isImageUploading.value) imageInput.value.click() };
@@ -174,10 +294,11 @@ const handleFileSelect = async (e) => {
     const headers = {};
     if (userStore.token) headers.Authorization = userStore.token;
     const res = await fetch(aiChatConfig.uploadEndpoint, { method: 'POST', headers, body: fd });
+    if (await handleUnauthorizedResponse(res)) return;
     if (!res.ok) { const err = await res.json(); throw new Error(err.detail || `上传失败: ${res.status}`); }
     const data = await res.json();
     // 在消息列表末尾插入文件气泡（用户侧）
-    messages.value.push({ role: 'file', name: data.filename, text: data.text, size: data.size });
+    messages.value.push({ role: 'file', name: data.filename, text: data.text, size: data.size, sent: false });
     await nextTick(); scrollToBottom();
   } catch (e) { messages.value.push({ role: 'assistant', content: `⚠️ 文件上传失败: ${e.message}` }); await nextTick(); scrollToBottom(); }
   finally { isUploading.value = false; e.target.value = ''; }
@@ -196,6 +317,7 @@ const handleImageSelect = async (e) => {
     const headers = {};
     if (userStore.token) headers.Authorization = userStore.token;
     const res = await fetch(aiChatConfig.attachmentEndpoint, { method: 'POST', headers, body: fd });
+    if (await handleUnauthorizedResponse(res)) return;
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || data.message || `图片上传失败: ${res.status}`);
 
@@ -224,6 +346,7 @@ const handleRagFileSelect = async (e) => {
     const headers = {};
     if (userStore.token) headers.Authorization = userStore.token;
     const res = await fetch(aiChatConfig.ragUploadEndpoint, { method: 'POST', headers, body: fd });
+    if (await handleUnauthorizedResponse(res)) return;
     if (!res.ok) {
       const err = await res.json();
       throw new Error(err.detail || `知识库上传失败: ${res.status}`);
@@ -242,8 +365,20 @@ const handleRagFileSelect = async (e) => {
     e.target.value = '';
   }
 };
+const openFilePreview = (fileMessage) => {
+  filePreview.value = fileMessage;
+  filePreviewVisible.value = true;
+};
+const closeFilePreview = () => {
+  filePreviewVisible.value = false;
+};
 const removeFileMsg = (index) => {
+  if (filePreview.value === messages.value[index]) closeFilePreview();
   messages.value.splice(index, 1);
+};
+const removePreviewFile = () => {
+  const index = messages.value.indexOf(filePreview.value);
+  if (index !== -1) removeFileMsg(index);
 };
 const removeImageMsg = async (index) => {
   const imageMessage = messages.value[index];
@@ -254,10 +389,11 @@ const removeImageMsg = async (index) => {
   try {
     const headers = {};
     if (userStore.token) headers.Authorization = userStore.token;
-    await fetch(aiChatConfig.deleteAttachmentEndpoint(imageMessage.attachmentId), {
+    const res = await fetch(aiChatConfig.deleteAttachmentEndpoint(imageMessage.attachmentId), {
       method: 'DELETE',
       headers,
     });
+    await handleUnauthorizedResponse(res);
   } catch (error) {
     console.warn('删除图片附件失败:', error);
   }
@@ -273,21 +409,39 @@ const formatTime = (iso) => {
 const handleNewChat = () => {
   chatStore.newConversation();
   messages.value = [{ role: 'assistant', content: '你好，我是鼠鼠小助手，有什么需要我帮忙的吗？' }];
+  disposeCharts();
+  closeFilePreview();
   sidebarVisible.value = false;
   nextTick(scrollToBottom);
 };
 const handleSelectConversation = async (conv) => {
   chatStore.selectConversation(conv.threadId);
+  disposeCharts();
+  closeFilePreview();
   sidebarVisible.value = false;
   messages.value = [{ role: 'assistant', content: '' }];
   const res = await chatStore.fetchMessages(conv.threadId);
   if (res.success) {
-    messages.value = res.data.map((m) => ({ role: m.role, ...parseStoredMessage(m.content) }));
+    messages.value = res.data.flatMap((m) => {
+      const parsed = parseStoredMessage(m.content);
+      const historyMessages = [];
+      if (m.role === 'user' && parsed.files.length) historyMessages.push(...parsed.files);
+      if (parsed.content || !parsed.files.length) {
+        historyMessages.push({
+          role: m.role,
+          content: parsed.content,
+          charts: parsed.charts,
+        });
+      }
+      return historyMessages;
+    });
     if (!messages.value.length) messages.value = [{ role: 'assistant', content: '（空会话）' }];
   } else {
     messages.value = [{ role: 'assistant', content: `加载失败：${res.message}` }];
   }
-  await nextTick(); scrollToBottom();
+  await nextTick();
+  renderAllCharts();
+  scrollToBottom();
 };
 const confirmDeleteConversation = async (conv) => {
   if (isLoading.value) {
@@ -315,15 +469,11 @@ const confirmDeleteConversation = async (conv) => {
   }
 };
 const sendMessage = async () => {
-  let msg = userInput.value.trim();
   if (isLoading.value) return;
-  // 检查是否有文件气泡在消息列表中，找到最新的文件气泡
-  const fileIdx = messages.value.findLastIndex(m => m.role === 'file');
-  if (fileIdx !== -1) {
-    const file = messages.value[fileIdx];
-    msg = `用户上传了文件 ${file.name}，内容如下：\n\`\`\`\n${file.text}\n\`\`\`\n\n${msg}`;
-    messages.value.splice(fileIdx, 1); // 发送后移除文件气泡
-  }
+  const typedMessage = userInput.value.trim();
+  const pendingFiles = messages.value.filter((message) => message.role === 'file' && !message.sent);
+  const fileContext = pendingFiles.map(buildFileContext).join('');
+  const modelMessage = [fileContext.trim(), typedMessage].filter(Boolean).join('\n\n');
   const imageMessages = messages.value
     .map((message, index) => ({ message, index }))
     .filter(({ message }) => message.role === 'image');
@@ -331,13 +481,16 @@ const sendMessage = async () => {
   const imageMarkdown = imageMessages
     .map(({ message }) => `![${message.name.replace(/[\[\]]/g, '')}](${message.previewUrl})`)
     .join('\n');
-  const userContent = [imageMarkdown, msg].filter(Boolean).join('\n\n');
-  if (!userContent) return;
+  const requestContent = [imageMarkdown, modelMessage].filter(Boolean).join('\n\n');
+  const userContent = [imageMarkdown, typedMessage].filter(Boolean).join('\n\n');
+  if (!requestContent) return;
 
   for (const { index } of imageMessages.sort((a, b) => b.index - a.index)) {
     messages.value.splice(index, 1);
   }
-  messages.value.push({ role: 'user', content: userContent }); userInput.value = '';
+  pendingFiles.forEach((file) => { file.sent = true; });
+  if (userContent) messages.value.push({ role: 'user', content: userContent });
+  userInput.value = '';
   messages.value.push({
     role: 'assistant',
     content: '',
@@ -357,16 +510,19 @@ const sendMessage = async () => {
       method: 'POST',
       headers,
       body: JSON.stringify({
-        messages: [{ role: 'user', content: msg }],
+        messages: [{ role: 'user', content: requestContent }],
         thread_id: threadId,
         attachment_ids: attachmentIds,
       }),
       signal: request.controller.signal,
     });
+    if (await handleUnauthorizedResponse(res)) return;
     if (!res.ok) throw new Error(`请求失败，状态码: ${res.status}`);
     const reader = res.body.getReader(); request.reader = reader;
     const decoder = new TextDecoder(); let buf = '', ai = '';
     const lastIdx = () => messages.value.length - 1;
+    let streamFinished = false;
+    readStream:
     while (true) {
       const { done, value } = await reader.read(); if (done) break;
       if (request.stopped) break;
@@ -374,13 +530,22 @@ const sendMessage = async () => {
       for (const line of lines) {
         if (request.stopped) break;
         if (!line.startsWith('data: ')) continue;
-        const raw = line.slice(6); if (raw === '[DONE]') continue;
+        const raw = line.slice(6);
+        if (raw === '[DONE]') {
+          streamFinished = true;
+          break readStream;
+        }
         try {
           const j = JSON.parse(raw);
           switch (j.type) {
             case 'session_start':
               chatStore.activeThreadId = j.thread_id;
-              chatStore.upsertConversation({ threadId: j.thread_id, title: j.title || msg.slice(0, 30), messageCount: 1, updatedAt: new Date().toISOString() });
+              chatStore.upsertConversation({
+                threadId: j.thread_id,
+                title: j.title || (typedMessage || pendingFiles[0]?.name || '文件对话').slice(0, 30),
+                messageCount: 1,
+                updatedAt: new Date().toISOString(),
+              });
               break;
             case 'tool_start':
               messages.value[lastIdx()].traces.push({ tool_id: j.tool_id, tool_name: j.tool_name, tool_label: j.tool_label || j.tool_name, tool_args: j.tool_args, result: '', expanded: false, done: false });
@@ -393,7 +558,9 @@ const sendMessage = async () => {
               break;
             case 'chart':
               messages.value[lastIdx()].charts.push(j.chart);
-              await nextTick(); scrollToBottom();
+              await nextTick();
+              renderAllCharts();
+              scrollToBottom();
               break;
             case 'text_delta':
               messages.value[lastIdx()].status = 'generating';
@@ -402,7 +569,8 @@ const sendMessage = async () => {
             case 'done':
               messages.value[lastIdx()].done = true;
               messages.value[lastIdx()].status = 'done';
-              break;
+              streamFinished = true;
+              break readStream;
             case 'error':
               messages.value[lastIdx()].content = j.message || 'AI 服务暂时不可用，请稍后重试。';
               messages.value[lastIdx()].done = true;
@@ -412,7 +580,10 @@ const sendMessage = async () => {
         } catch (e) { console.error(e) }
       }
     }
-    if (!ai && !request.stopped) {
+    if (streamFinished && request.reader) {
+      await request.reader.cancel().catch(() => {});
+    }
+    if (!ai && !request.stopped && request.message.status !== 'error') {
       messages.value[lastIdx()].content = '抱歉，AI 暂时无法生成回复，请稍后再试。';
       messages.value[lastIdx()].status = 'error';
     }
@@ -446,16 +617,24 @@ const stopGeneration = async () => {
   if (request.reader) await request.reader.cancel();
   await nextTick(); scrollToBottom();
 };
+const resizeCharts = () => {
+  chartInstances.forEach((chart) => chart.resize());
+};
 watch(messages, () => nextTick(scrollToBottom), { deep: true });
-onMounted(async () => { scrollToBottom(); await chatStore.fetchConversations(); });
+onMounted(async () => {
+  window.addEventListener('resize', resizeCharts);
+  scrollToBottom();
+  await chatStore.fetchConversations();
+});
+onActivated(() => renderAllCharts());
 onBeforeUnmount(() => {
+  window.removeEventListener('resize', resizeCharts);
   if (activeRequest.value) {
     activeRequest.value.stopped = true;
     activeRequest.value.controller.abort();
     activeRequest.value.reader?.cancel();
   }
-  chartInstances.forEach((chart) => chart.dispose());
-  chartInstances.clear();
+  disposeCharts();
 });
 </script>
 <style scoped>
@@ -492,6 +671,7 @@ onBeforeUnmount(() => {
 
 /* 文件气泡：用户侧，右对齐，可点击删除 */
 .file {
+  width: fit-content;
   margin-left: auto;
   cursor: pointer;
   transition: opacity 0.2s;
@@ -525,6 +705,45 @@ onBeforeUnmount(() => {
   line-height: 1.8;
   letter-spacing: 0.03em;
   transition: transform 0.2s var(--ease-smooth);
+}
+.msg-text.is-collapsed {
+  position: relative;
+  max-height: 300px;
+  overflow: hidden;
+}
+.msg-text.is-collapsed::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 72px;
+  pointer-events: none;
+}
+.ai .msg-text.is-collapsed::after {
+  background: linear-gradient(180deg, rgba(255, 248, 231, 0), #fff8e7 82%);
+}
+.user .msg-text.is-collapsed::after {
+  background: linear-gradient(180deg, rgba(232, 244, 253, 0), #e8f4fd 82%);
+}
+.message-collapse-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin: 10px auto 0;
+  padding: 4px 10px;
+  border: 1px solid rgba(120, 140, 170, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.42);
+  color: #5a6f8f;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.message-collapse-btn:hover {
+  background: rgba(255, 255, 255, 0.65);
 }
 
 /* AI 云朵（左侧）—— 暖白蓬松云 */
@@ -587,6 +806,40 @@ onBeforeUnmount(() => {
   padding: 10px 16px;
   font-size: 14px;
 }
+.file-bubble {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: min(300px, 70vw);
+  max-width: 100%;
+}
+.file-icon {
+  flex-shrink: 0;
+  color: #3a8a5a;
+  font-size: 22px;
+}
+.file-info {
+  flex: 1;
+  min-width: 0;
+}
+.file-name {
+  overflow: hidden;
+  color: #245a38;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-meta {
+  margin-top: 2px;
+  color: #5f876c;
+  font-size: 12px;
+}
+.file-remove {
+  flex-shrink: 0;
+  padding: 6px;
+  color: #6b8f78;
+  font-size: 16px;
+}
 .file .msg-bubble::before {
   content: '';
   position: absolute;
@@ -617,6 +870,60 @@ onBeforeUnmount(() => {
   color: #5a5a7a;
   font-size: 12px;
   text-align: center;
+}
+
+.file-preview {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: linear-gradient(180deg, #fffdf6, #fff8ea);
+}
+.file-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid rgba(255, 200, 150, 0.25);
+}
+.file-preview-heading {
+  flex: 1;
+  min-width: 0;
+}
+.file-preview-title {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-preview-meta {
+  margin-top: 3px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+.file-preview-close {
+  flex-shrink: 0;
+  padding: 6px;
+  color: var(--text-secondary);
+  font-size: 20px;
+}
+.file-preview-content {
+  flex: 1;
+  overflow: auto;
+  margin: 0;
+  padding: 18px;
+  color: var(--text-primary);
+  font-family: "JetBrains Mono", "Fira Code", "Consolas", monospace;
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.file-preview-footer {
+  padding: 12px 18px 18px;
+  border-top: 1px solid rgba(255, 200, 150, 0.2);
 }
 
 /* 云朵悬停效果 */

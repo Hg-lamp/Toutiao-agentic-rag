@@ -47,7 +47,8 @@ const routes = [
     component: () => import('../views/History.vue'),
     meta: {
       title: '浏览历史',
-      keepAlive: false
+      keepAlive: false,
+      requiresAuth: true
     }
   },
   {
@@ -56,7 +57,8 @@ const routes = [
     component: () => import('../views/Favorite.vue'),
     meta: {
       title: '我的收藏',
-      keepAlive: false
+      keepAlive: false,
+      requiresAuth: true
     }
   },
   {
@@ -92,7 +94,8 @@ const routes = [
     component: () => import('../views/Profile.vue'),
     meta: {
       title: '个人信息',
-      keepAlive: false
+      keepAlive: false,
+      requiresAuth: true
     }
   },
   {

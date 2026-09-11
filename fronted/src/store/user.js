@@ -139,7 +139,8 @@ export const useUserStore = defineStore('user', {
         console.error('获取用户信息请求失败:', error);
         return {
           success: false,
-          message: error.response?.data?.message || '获取用户信息请求失败，请稍后再试'
+          unauthorized: error.response?.status === 401,
+          message: error.response?.data?.detail || error.response?.data?.message || '获取用户信息请求失败，请稍后再试'
         };
       }
     },

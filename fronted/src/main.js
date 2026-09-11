@@ -2,6 +2,7 @@ import { createApp } from 'vue'
 import App from './App.vue'
 import router from './router'
 import pinia from './store'
+import { setupAuthInterceptor } from './utils/auth'
 
 // 导入Vant组件库
 import { 
@@ -65,9 +66,10 @@ app.use(Toast)
 app.use(Icon)
 app.use(Popup)
 
-// 使用路由和状态管理
-app.use(router)
+// 使用状态管理，再挂载路由，确保鉴权失效处理可以访问用户状态
 app.use(pinia)
+app.use(router)
+setupAuthInterceptor({ router, pinia })
 
 app.mount('#app')
 
