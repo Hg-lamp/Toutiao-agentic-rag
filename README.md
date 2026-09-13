@@ -4,6 +4,7 @@
 
 > 项目需求与验收标准见 [REQUIREMENTS.md](REQUIREMENTS.md)。
 > 实时新闻采集的完整方案（问题定位、架构、配置、验收记录）见 [docs/NEWS_REALTIME.md](docs/NEWS_REALTIME.md)。
+> Personal Mission Agent 的产品边界、协议、开发定稿和双 Agent 安排见 [docs/01-product-boundary.md](docs/01-product-boundary.md) 至 [docs/11-work-allocation.md](docs/11-work-allocation.md)。
 
 ## 功能特性
 
@@ -28,6 +29,13 @@
 - **会话管理** — 会话列表、历史消息查看、删除会话
 - **对话记忆** — 提取并持久化用户长期偏好，辅助后续回答
 - **统一日志** — loguru 接管 uvicorn/SQLAlchemy 标准库日志，本地按天轮转写入 `logs/`，容器内直接输出到 `docker logs`
+- **工具安全网关** — 父/子 Agent 共用 `ToolRegistry + ToolGateway`，官方 `ToolNode` 的
+  `awrap_tool_call` 负责参数校验、权限、超时、并发和按工具配置的重试；MCP 工具只能经
+  `SandboxBroker` 进入一次性 Docker 沙箱（默认无网络、非 root、只读根文件系统）。
+
+工具治理配置集中在 `backend/config/tool_config.py` 和 `.env`。第一阶段使用 Docker Desktop
+的 WSL2 后端；本地开发使用构建出的镜像标签，生产环境必须替换为不可变 digest。
+MCP 路径失败时不会回退到宿主机执行。
 
 ## 实时新闻是怎么工作的
 
@@ -166,6 +174,21 @@ alembic upgrade head
 > `OperationalError: no such column: news.source`（HTTP 500）。
 
 ### 6. 启动服务
+
+如果要用 `sandbox_echo` 验证 MCP 沙箱链路，先构建最小沙箱镜像：
+
+```bash
+docker build -f sandbox/Dockerfile -t toutiao-agentic-rag-sandbox:dev .
+```
+
+当前可用两个沙箱验证工具：
+
+- `sandbox_echo`：回显文本，用于验证 MCP stdio 链路。
+- `sandbox_run_command`：仅允许 `pwd`、`id`、`python_version`，用于验证沙箱内子进程执行。
+
+第一阶段需要让后端和 `SandboxBroker` 运行在 WSL 或宿主机进程中，因为
+Broker 需要调用 Docker CLI 创建临时容器。当前后端 Docker 镜像内部没有
+Docker CLI 和 Docker Socket，所以暂不支持在 `backend` 容器内创建沙箱。
 
 ```bash
 # 后端

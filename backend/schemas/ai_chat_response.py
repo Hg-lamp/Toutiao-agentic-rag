@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional, Annotated
+from typing import Optional
 from pydantic import BaseModel, Field, ConfigDict
 
 from backend.config.upload_config import MAX_CHAT_ATTACHMENTS
@@ -81,3 +81,7 @@ class MessageListResponse(BaseModel):
     model_config = ConfigDict(
         from_attributes=True,
     )
+
+
+
+from backend.schemas.rag import Citation, RagFilters, RagQuery, RagResult

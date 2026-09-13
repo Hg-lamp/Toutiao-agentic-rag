@@ -575,13 +575,14 @@ const sendMessage = async () => {
               messages.value[lastIdx()].content = j.message || 'AI 服务暂时不可用，请稍后重试。';
               messages.value[lastIdx()].done = true;
               messages.value[lastIdx()].status = 'error';
-              break;
+              streamFinished = true;
+              break readStream;
           }
         } catch (e) { console.error(e) }
       }
     }
     if (streamFinished && request.reader) {
-      await request.reader.cancel().catch(() => {});
+      request.reader.cancel().catch(() => {});
     }
     if (!ai && !request.stopped && request.message.status !== 'error') {
       messages.value[lastIdx()].content = '抱歉，AI 暂时无法生成回复，请稍后再试。';
@@ -593,10 +594,8 @@ const sendMessage = async () => {
       request.message.status = 'error';
     }
   } finally {
-    if (activeRequest.value === request) {
-      activeRequest.value = null;
-      isLoading.value = false;
-    }
+    if (activeRequest.value === request) activeRequest.value = null;
+    isLoading.value = false;
     request.message.done = true;
     if (request.message.status === 'pending' || request.message.status === 'generating') {
       request.message.status = request.stopped ? 'stopped' : 'done';
@@ -614,7 +613,7 @@ const stopGeneration = async () => {
     ? `${request.message.content}\n\n> 已停止生成。`
     : '已停止生成。';
   request.controller.abort();
-  if (request.reader) await request.reader.cancel();
+  if (request.reader) request.reader.cancel().catch(() => {});
   await nextTick(); scrollToBottom();
 };
 const resizeCharts = () => {

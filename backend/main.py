@@ -21,7 +21,7 @@ from backend.config.logging_config import setup_logging
 
 setup_logging()
 
-from backend.routers import news, favorite, users, history, ai_chat
+from backend.routers import news, favorite, users, history, ai_chat, rag
 from backend.services.news_scheduler import start_scheduler, stop_scheduler
 from backend.utils.exception_handler import register_exception_handlers
 
@@ -68,6 +68,7 @@ app.include_router(users.router)
 app.include_router(favorite.router)
 app.include_router(history.router)
 app.include_router(ai_chat.router)
+app.include_router(rag.router)
 
 # 挂载静态文件目录（头像上传）
 uploads_dir = os.path.join(os.path.dirname(__file__), "uploads")

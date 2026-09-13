@@ -6,8 +6,8 @@ from langgraph.graph import START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
 
-from backend.config.graph_config import retry_policy
 from backend.services.tools import CHILD_TOOLS
+from backend.services.tool_gateway import GATEWAY
 from backend.schemas.agent_response import AgentResult
 
 
@@ -75,8 +75,12 @@ async def router(state:ChildState)->Command[Literal["__end__","tool_node"]]:
 
 builder= StateGraph(state_schema=ChildState,input_schema=InputState,output_schema=OutputState)
 
-builder.add_node('llm_node',llm_node,timeout=60,retry_policy=retry_policy)
-builder.add_node('tool_node',ToolNode(tools=CHILD_TOOLS),timeout=60,retry_policy=retry_policy)
+builder.add_node('llm_node',llm_node,timeout=60)
+builder.add_node(
+    'tool_node',
+    ToolNode(tools=CHILD_TOOLS, awrap_tool_call=GATEWAY.awrap_tool_call),
+    timeout=60,
+)
 builder.add_node("router",router)
 
 builder.add_edge(START,"llm_node")
